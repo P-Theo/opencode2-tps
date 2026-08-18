@@ -3,6 +3,13 @@
   "version": "0.2.0",
   "description": "Live token-throughput indicator for the OpenCode 2 TUI prompt composer",
   "license": "MIT",
+  "author": "P-Theo",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/P-Theo/opencode2-tps.git"
+  },
+  "homepage": "https://github.com/P-Theo/opencode2-tps#readme",
+  "bugs": "https://github.com/P-Theo/opencode2-tps/issues",
   "type": "module",
   "keywords": [
     "opencode",
