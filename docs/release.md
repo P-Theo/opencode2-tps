@@ -35,7 +35,7 @@ Point `cli.json` at the installed file, start the TUI and send a prompt.
 
 ## 4. Publish a prerelease
 
-Use a version such as `0.2.0-rc.1`.
+Use a version such as `0.1.0-rc.1`.
 
 ```sh
 npm publish --tag next

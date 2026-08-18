@@ -37,6 +37,8 @@ const result = await transformAsync(code, {
 
 if (!result?.code) throw new Error("babel produced no output")
 
+const output = `${result.code}\n`
+
 await mkdir(outDir, { recursive: true })
-await writeFile(out, `${result.code}\n`, "utf8")
-console.log(`built ${out} (${result.code.length} bytes)`)
+await writeFile(out, output, "utf8")
+console.log(`built ${out} (${Buffer.byteLength(output)} bytes)`)
