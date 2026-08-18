@@ -13,5 +13,5 @@
     "noUncheckedIndexedAccess": true,
     "types": ["node", "bun"]
   },
-  "include": ["tps.tsx", "slotprobe.tsx", "tps.test.ts"]
+  "include": ["tps.tsx", "tps.test.ts"]
 }
