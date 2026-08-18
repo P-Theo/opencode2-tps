@@ -229,8 +229,27 @@ export class TpsTracker {
 // parsing boundary: every value is validated and clamped, and anything invalid
 // falls back to the default rather than propagating NaN into the arithmetic.
 
-const DISPLAY_MODES = { both: true, tokens: true, tps: true } as const
-export type DisplayMode = keyof typeof DISPLAY_MODES
+const DISPLAY_MODES = ["both", "tokens", "tps"] as const
+export type DisplayMode = (typeof DISPLAY_MODES)[number]
+
+/**
+ * A value as it can arrive from `cli.json`: arbitrary JSON, nothing more.
+ * Named so the option boundary has a real input contract to validate against.
+ */
+export type OptionValue = string | number | boolean | null | readonly OptionValue[] | { readonly [key: string]: OptionValue }
+
+/** The option surface, exactly as documented in the README, before validation. */
+export interface TpsOptionsInput {
+  readonly display?: OptionValue
+  readonly refreshHz?: OptionValue
+  readonly sampleWindowMs?: OptionValue
+  readonly liveStaleMs?: OptionValue
+  readonly singleSampleMinMs?: OptionValue
+  readonly singleSampleMaxMs?: OptionValue
+  readonly tailMaxMs?: OptionValue
+  readonly gapCapMs?: OptionValue
+  readonly debug?: OptionValue
+}
 
 export interface TpsOptions extends TpsConfig {
   readonly display: DisplayMode
@@ -245,28 +264,35 @@ export const DEFAULT_OPTIONS: TpsOptions = {
   debug: false,
 }
 
-function clampNumber(raw: unknown, fallback: number, min: number, max: number): number {
-  if (!Number.isFinite(raw)) return fallback
-  return Math.min(Math.max(raw as number, min), max)
+function isFiniteNumber(value: OptionValue | undefined): value is number {
+  return Number.isFinite(value)
 }
 
-export function resolveOptions(raw: Readonly<Record<string, unknown>>): TpsOptions {
-  const display = raw["display"]
-  const singleSampleMinMs = clampNumber(raw["singleSampleMinMs"], DEFAULT_OPTIONS.singleSampleMinMs, 50, 5_000)
+function isDisplayMode(value: OptionValue | undefined): value is DisplayMode {
+  return DISPLAY_MODES.some((mode) => mode === value)
+}
+
+function clampNumber(value: OptionValue | undefined, fallback: number, min: number, max: number): number {
+  if (!isFiniteNumber(value)) return fallback
+  return Math.min(Math.max(value, min), max)
+}
+
+export function resolveOptions(raw: TpsOptionsInput): TpsOptions {
+  const singleSampleMinMs = clampNumber(raw.singleSampleMinMs, DEFAULT_OPTIONS.singleSampleMinMs, 50, 5_000)
   return {
-    display: Object.hasOwn(DISPLAY_MODES, display as PropertyKey) ? (display as DisplayMode) : DEFAULT_OPTIONS.display,
-    refreshHz: clampNumber(raw["refreshHz"], DEFAULT_OPTIONS.refreshHz, 1, 60),
-    sampleWindowMs: clampNumber(raw["sampleWindowMs"], DEFAULT_OPTIONS.sampleWindowMs, 1_000, 60_000),
-    liveStaleMs: clampNumber(raw["liveStaleMs"], DEFAULT_OPTIONS.liveStaleMs, 250, 30_000),
+    display: isDisplayMode(raw.display) ? raw.display : DEFAULT_OPTIONS.display,
+    refreshHz: clampNumber(raw.refreshHz, DEFAULT_OPTIONS.refreshHz, 1, 60),
+    sampleWindowMs: clampNumber(raw.sampleWindowMs, DEFAULT_OPTIONS.sampleWindowMs, 1_000, 60_000),
+    liveStaleMs: clampNumber(raw.liveStaleMs, DEFAULT_OPTIONS.liveStaleMs, 250, 30_000),
     singleSampleMinMs,
     // The ceiling can never sit below the floor, whatever the user wrote.
     singleSampleMaxMs: Math.max(
       singleSampleMinMs,
-      clampNumber(raw["singleSampleMaxMs"], DEFAULT_OPTIONS.singleSampleMaxMs, 50, 10_000),
+      clampNumber(raw.singleSampleMaxMs, DEFAULT_OPTIONS.singleSampleMaxMs, 50, 10_000),
     ),
-    tailMaxMs: clampNumber(raw["tailMaxMs"], DEFAULT_OPTIONS.tailMaxMs, 0, 10_000),
-    gapCapMs: clampNumber(raw["gapCapMs"], DEFAULT_OPTIONS.gapCapMs, 100, 30_000),
-    debug: raw["debug"] === true,
+    tailMaxMs: clampNumber(raw.tailMaxMs, DEFAULT_OPTIONS.tailMaxMs, 0, 10_000),
+    gapCapMs: clampNumber(raw.gapCapMs, DEFAULT_OPTIONS.gapCapMs, 100, 30_000),
+    debug: raw.debug === true,
   }
 }
 

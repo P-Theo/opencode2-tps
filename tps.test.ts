@@ -2,7 +2,13 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { existsSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import definition, { DEFAULT_OPTIONS, formatLabel, resolveOptions, TpsTracker } from "./tps.tsx"
+import definition, {
+  DEFAULT_OPTIONS,
+  formatLabel,
+  resolveOptions,
+  TpsTracker,
+  type TpsOptionsInput,
+} from "./tps.tsx"
 
 // 50 ASCII bytes -> ceil(50/5) = 10 estimated tokens
 const DELTA = "a".repeat(50)
@@ -194,35 +200,86 @@ describe("formatLabel", () => {
 // that matter (which events are subscribed, and when the render timer runs) are
 // observable through a fake context and a patched setInterval.
 
-type SetupContext = Parameters<typeof definition.setup>[0]
+/** The event fields `setup` reads; the harness emits nothing else. */
+interface FakeEvent {
+  readonly data: {
+    readonly sessionID?: string
+    readonly delta?: string
+  }
+}
 
-function createHarness(options: Record<string, unknown> = {}) {
-  const handlers = new Map<string, ((event: { data: Record<string, unknown> }) => void)[]>()
-  const generation = { active: 0 }
-  const timer = { callback: undefined as (() => void) | undefined, intervalMs: 0, cleared: 0, created: 0 }
+interface TimerSpy {
+  callback: (() => void) | undefined
+  intervalMs: number
+  cleared: number
+  created: number
+}
+
+interface Generation {
+  active: number
+}
+
+/**
+ * The slice of the host context `setup` actually touches. Member signatures
+ * mirror the SDK's, so the real `Context` remains assignable to this and a
+ * renamed or re-shaped host member fails to compile instead of being erased.
+ */
+interface FakeContext {
+  readonly options: TpsOptionsInput
+  readonly app: { readonly version: string }
+  readonly theme: { readonly text: { readonly subdued: string } }
+  readonly storage: {
+    memory: (
+      key: string,
+      options: { readonly initial: Generation },
+    ) => readonly [Generation, (mutation: (draft: Generation) => void) => void]
+  }
+  readonly data: {
+    readonly on: (type: string, handler: (event: FakeEvent) => void) => () => void
+  }
+  readonly ui: { readonly slot: () => () => void }
+}
+
+// SAFETY: `FakeContext` covers every context member `setup` touches; the host
+// members it omits are unreachable on this path. TypeScript cannot express
+// "partial implementation of a foreign interface", so the parameter is narrowed
+// through `unknown` — a test-double limitation, not a production cast.
+// oxlint-disable-next-line anti-slop/no-chained-type-assertions
+const setupWithFakeContext = definition.setup as unknown as (
+  context: FakeContext,
+) => ReturnType<typeof definition.setup>
+
+function createHarness(options: TpsOptionsInput = {}) {
+  const handlers = new Map<string, ((event: FakeEvent) => void)[]>()
+  const generation: Generation = { active: 0 }
+  const timer: TimerSpy = { callback: undefined, intervalMs: 0, cleared: 0, created: 0 }
 
   const realSetInterval = globalThis.setInterval
   const realClearInterval = globalThis.clearInterval
-  globalThis.setInterval = ((fn: () => void, ms: number) => {
+  globalThis.setInterval = (fn: () => void, ms?: number) => {
     timer.callback = fn
-    timer.intervalMs = ms
+    timer.intervalMs = ms ?? 0
     timer.created += 1
-    return { unref: () => {} }
-  }) as unknown as typeof setInterval
-  globalThis.clearInterval = (() => {
+    // A real (immediately cancelled) handle keeps the host's return type honest
+    // without leaving a live interval behind.
+    const handle = realSetInterval(() => {}, 60_000)
+    realClearInterval(handle)
+    return handle
+  }
+  globalThis.clearInterval = () => {
     timer.cleared += 1
     timer.callback = undefined
-  }) as unknown as typeof clearInterval
+  }
 
-  const ctx = {
+  const ctx: FakeContext = {
     options,
     app: { version: "test" },
     theme: { text: { subdued: "#888888" } },
     storage: {
-      memory: () => [generation, (mutate: (draft: { active: number }) => void) => mutate(generation)] as const,
+      memory: () => [generation, (mutation: (draft: Generation) => void) => mutation(generation)] as const,
     },
     data: {
-      on: (type: string, handler: (event: { data: Record<string, unknown> }) => void) => {
+      on: (type: string, handler: (event: FakeEvent) => void) => {
         const list = handlers.get(type) ?? []
         list.push(handler)
         handlers.set(type, list)
@@ -230,13 +287,16 @@ function createHarness(options: Record<string, unknown> = {}) {
       },
     },
     ui: { slot: () => () => {} },
-  } as unknown as SetupContext
+  }
 
-  const cleanup = definition.setup(ctx) as () => void
+  // `setup` is declared as possibly async and possibly cleanup-less; ours is
+  // neither, and the timer assertions fail loudly if that ever changes.
+  const started = setupWithFakeContext(ctx)
+  const cleanup = started instanceof Function ? started : () => {}
   return {
     timer,
     subscribed: (type: string) => handlers.has(type),
-    emit: (type: string, data: Record<string, unknown>) => {
+    emit: (type: string, data: FakeEvent["data"]) => {
       for (const handler of handlers.get(type) ?? []) handler({ data })
     },
     tick: () => timer.callback?.(),

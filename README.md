@@ -107,6 +107,7 @@ plugin never fails to load because of a bad option.
 
 ```sh
 npm ci          # pinned dev deps (typecheck + JSX runtime resolution)
+npm run lint    # oxlint + the vendored anti-slop plugin (tools/oxlint/anti-slop)
 npm run check   # tsc --noEmit, including the test file
 npm test        # bun test: tracker, option parsing, setup wiring
 npm run build   # dist/tui.js, the published entrypoint
