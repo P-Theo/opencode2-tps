@@ -43,14 +43,14 @@ together. The SDK is used type-only; the default export is structural.
 
 ## Install
 
-Installed as a symlink leaf by the toolbox installer:
+Install it as a symlink leaf:
 
 ```sh
-python3 scripts/install_links.py opencode-v2 --apply
+mkdir -p ~/.config/opencode/plugins/tui
+ln -sfn "$PWD/tps.tsx" ~/.config/opencode/plugins/tui/tps.tsx
 ```
 
-This links `plugins/tps/opencode-v2/tps.tsx` to
-`~/.config/opencode/plugins/tui/tps.tsx`. The V2 TUI discovers it on start and
+The V2 TUI discovers `~/.config/opencode/plugins/tui/tps.tsx` on start and
 hot-reloads it on edit.
 
 ## Development
