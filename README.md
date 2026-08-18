@@ -168,6 +168,12 @@ plugin must share them to stay on one reactive graph and one renderer.
 Declaring them as real dependencies would add ~95 MB of never-loaded modules to
 every install.
 
+The `overrides` entry lifts `@opentui/solid`'s pinned `@babel/core@7.28.0` past
+GHSA-4x5r-pxfx-6jf8. It is dev-only hygiene — the published bundle is built with
+this repo's own top-level Babel and the package itself has no runtime
+dependencies — but it keeps `npm audit` at zero so a real finding is not lost in
+noise.
+
 `slotprobe.tsx` is a dev-only utility, excluded from the tarball: it renders
 labeled markers into candidate slots so placements can be inspected visually.
 Load it by symlinking it into `~/.config/opencode/plugins/tui/`, and remove the
@@ -176,8 +182,15 @@ link afterwards.
 Debug logging is off by default — an unconfigured install writes nothing to
 disk. Enable it with the `debug` option, or with `TPS_DEBUG=1` in the TUI
 process's environment when the plugin was auto-discovered and therefore got no
-options. The log goes to `<tmpdir>/tps-debug-<pid>.log`, one file per TUI
-process.
+options (only `1` and `true` count, so `TPS_DEBUG=0` stays off). The log goes to
+`<tmpdir>/tps-debug-<pid>/tps.log`, one directory per PID — a process keeps
+appending across hot reloads, and a recycled PID appends after the previous
+owner, so read the timestamps. The directory is created owner-only: the log
+records session IDs, and a predictable path in a shared
+temp directory is both readable by other local users and pre-emptable by a
+symlink that `appendFileSync` would follow. If the name is already taken by
+anything that is not our own private directory, the plugin logs into a fresh
+`tps-debug-<pid>-XXXXXX` directory instead.
 
 ### Release
 

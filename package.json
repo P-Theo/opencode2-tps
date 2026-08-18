@@ -39,6 +39,11 @@
       "optional": true
     }
   },
+  "overrides": {
+    "@opentui/solid": {
+      "@babel/core": "^7.29.7"
+    }
+  },
   "devDependencies": {
     "@babel/core": "^7.29.7",
     "@babel/preset-typescript": "^7.29.7",

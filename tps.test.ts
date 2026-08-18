@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { existsSync, rmSync } from "node:fs"
+import { existsSync, readdirSync, rmSync, statSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import definition, {
+  DEBUG_DIR_PREFIX,
   DEFAULT_OPTIONS,
   formatLabel,
+  isEnvEnabled,
   resolveOptions,
   TpsTracker,
   type TpsOptionsInput,
@@ -180,6 +182,29 @@ describe("TpsTracker", () => {
     tracker.push("s", "", 1000)
     expect(tracker.value("s", 1000)).toBeNull()
   })
+
+  test("caps how many finished runs it remembers, keeping the recent ones", () => {
+    const tracker = new TpsTracker()
+    // 65 sessions, each one run: the first started is the first forgotten.
+    for (let i = 0; i < 65; i += 1) {
+      tracker.push(`s${i}`, DELTA, i * 10)
+      tracker.finish(`s${i}`, i * 10 + 100)
+    }
+    expect(tracker.value("s0", 10_000)).toBeNull()
+    expect(tracker.value("s1", 10_000)?.frozen).toBe(true)
+    expect(tracker.value("s64", 10_000)?.frozen).toBe(true)
+  })
+
+  test("never evicts a streaming run to stay under the cap", () => {
+    const tracker = new TpsTracker()
+    tracker.push("live", DELTA, 0) // oldest entry, still running
+    for (let i = 0; i < 100; i += 1) {
+      tracker.push(`s${i}`, DELTA, 1000 + i * 10)
+      tracker.finish(`s${i}`, 1000 + i * 10 + 10)
+    }
+    expect(tracker.value("live", 1000)?.frozen).toBe(false)
+    expect(tracker.hasRunning()).toBe(true)
+  })
 })
 
 describe("formatLabel", () => {
@@ -308,10 +333,21 @@ function createHarness(options: TpsOptionsInput = {}) {
   }
 }
 
+/**
+ * Every debug directory this process could have created: the preferred name, or
+ * a mkdtemp fallback. Matched exactly, not by prefix — `afterEach` deletes these,
+ * and a prefix would make PID 12 claim (and remove) a live PID 123 log directory.
+ */
+function debugDirs(): string[] {
+  const own = `${DEBUG_DIR_PREFIX}${process.pid}`
+  return readdirSync(tmpdir())
+    .filter((entry) => entry === own || entry.startsWith(`${own}-`))
+    .map((entry) => join(tmpdir(), entry))
+}
+
 describe("plugin setup", () => {
   afterEach(() => {
-    const log = join(tmpdir(), `tps-debug-${process.pid}.log`)
-    if (existsSync(log)) rmSync(log)
+    for (const dir of debugDirs()) rmSync(dir, { recursive: true, force: true })
   })
 
   test("subscribes to the events the tracker needs", () => {
@@ -371,6 +407,29 @@ describe("plugin setup", () => {
     h.restore()
   })
 
+  // Ordered before the negative test: `afterEach` removes the directory, and the
+  // module keeps its resolved path, so re-enabling debug afterwards would write
+  // into a directory that no longer exists.
+  test("debug logs into a private directory, not a guessable temp path", () => {
+    delete process.env["TPS_DEBUG"]
+    const h = createHarness({ debug: true })
+    h.emit("session.execution.started", { sessionID: "s" })
+    h.emit("session.text.delta", { sessionID: "s", delta: "hello" })
+    h.emit("session.idle", { sessionID: "s" })
+    h.tick()
+    h.cleanup()
+    h.restore()
+
+    const dir = join(tmpdir(), `${DEBUG_DIR_PREFIX}${process.pid}`)
+    expect(debugDirs()).toEqual([dir])
+    // Owner-only: the log carries session IDs, so other local users must not
+    // even be able to list it.
+    expect(statSync(dir).mode & 0o777).toBe(0o700)
+    expect(existsSync(join(dir, "tps.log"))).toBe(true)
+    // The old predictable path must stay unused.
+    expect(existsSync(join(tmpdir(), `tps-debug-${process.pid}.log`))).toBe(false)
+  })
+
   test("writes nothing to disk without the debug option", () => {
     delete process.env["TPS_DEBUG"]
     const h = createHarness()
@@ -380,7 +439,16 @@ describe("plugin setup", () => {
     h.tick()
     h.cleanup()
     h.restore()
+    expect(debugDirs()).toHaveLength(0)
     expect(existsSync(join(tmpdir(), `tps-debug-${process.pid}.log`))).toBe(false)
+  })
+})
+
+describe("isEnvEnabled", () => {
+  test("accepts only explicit truthy spellings", () => {
+    for (const value of ["1", "true", "TRUE", " true "]) expect(isEnvEnabled(value)).toBe(true)
+    // A shell script exporting TPS_DEBUG=0 must not start writing to disk.
+    for (const value of [undefined, "", "0", "false", "no", "off"]) expect(isEnvEnabled(value)).toBe(false)
   })
 })
 

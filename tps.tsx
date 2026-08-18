@@ -1,23 +1,70 @@
 /** @jsxImportSource @opentui/solid */
 import type { Plugin } from "@opencode-ai/plugin/tui"
 import { createMemo, createSignal, Show } from "solid-js"
-import { appendFileSync } from "node:fs"
+import { appendFileSync, lstatSync, mkdirSync, mkdtempSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 // ---------------------------------------------------------------------------
 // debug
 //
-// Off unless asked for: an unconfigured install must never touch disk. The log
-// file is per-process so concurrent TUIs (and other users) cannot collide in
-// the shared temp directory.
+// Off unless asked for: an unconfigured install must never touch disk.
+//
+// The log goes inside an owner-only directory instead of straight into the
+// shared temp directory. A guessable path there (the PID is a small, enumerable
+// number) can be pre-created by another local user as a symlink, which
+// appendFileSync would happily follow into a file of their choosing; a
+// world-readable log would also hand them the session IDs it records.
+
+export const DEBUG_DIR_PREFIX = "tps-debug-"
 
 const debugState = { enabled: false, file: "" }
 
+/** True only for a real directory that belongs to us and to no one else. */
+function isOwnPrivateDir(path: string): boolean {
+  try {
+    const stats = lstatSync(path) // lstat, not stat: a planted symlink must not pass
+    if (!stats.isDirectory()) return false
+    const uid = process.getuid?.()
+    // Windows has no uid and a per-user temp directory, so there is nothing to check.
+    if (uid === undefined) return true
+    return stats.uid === uid && (stats.mode & 0o777) === 0o700
+  } catch {
+    return false
+  }
+}
+
+/**
+ * The 0700 directory to log into. Named after the PID so the process's own hot
+ * reloads keep appending to one file, and only reused when it really is ours —
+ * anything else squatting on the name gets sidestepped via mkdtemp.
+ */
+function debugDir(): string {
+  const preferred = join(tmpdir(), `${DEBUG_DIR_PREFIX}${process.pid}`)
+  try {
+    mkdirSync(preferred, { mode: 0o700 })
+    return preferred
+  } catch {
+    if (isOwnPrivateDir(preferred)) return preferred
+    return mkdtempSync(`${preferred}-`)
+  }
+}
+
 function configureDebug(enabled: boolean): void {
-  if (!enabled) return
-  debugState.enabled = true
-  if (!debugState.file) debugState.file = join(tmpdir(), `tps-debug-${process.pid}.log`)
+  debugState.enabled = enabled
+  if (!enabled || debugState.file) return
+  try {
+    debugState.file = join(debugDir(), "tps.log")
+  } catch {
+    debugState.enabled = false // no usable temp directory: stay silent
+  }
+}
+
+/** Truthy spellings only: `TPS_DEBUG=0` must not start writing to disk. */
+export function isEnvEnabled(value: string | undefined): boolean {
+  if (value === undefined) return false
+  const normalized = value.trim().toLowerCase()
+  return normalized === "1" || normalized === "true"
 }
 
 function mark(line: string): void {
@@ -91,7 +138,16 @@ export interface TpsValue {
   readonly frozen: boolean
 }
 
+// A finished run keeps its frozen average indefinitely (it is what the composer
+// still shows), so the map is bounded instead: past this many tracked sessions,
+// the least recently started *finished* runs are dropped. Running ones are never
+// touched. Entries are tiny, so this is hygiene for a long-lived TUI, not a
+// memory fix.
+const MAX_TRACKED_RUNS = 64
+
 export class TpsTracker {
+  // Insertion order is kept equal to run-start recency (see beginRun), which is
+  // what makes eviction from the front drop the stalest session.
   private readonly runs = new Map<string, RunState>()
   private readonly config: TpsConfig
 
@@ -116,6 +172,21 @@ export class TpsTracker {
     st.activeMs = 0
     st.lastSampleAt = null
     st.frozen = null
+    // Re-insert so this session becomes the newest in iteration order. Every
+    // entry is created through here, so the cap is checked on the one path that
+    // can grow the map.
+    this.runs.delete(sessionID)
+    this.runs.set(sessionID, st)
+    this.evictStale()
+  }
+
+  private evictStale(): void {
+    if (this.runs.size <= MAX_TRACKED_RUNS) return
+    for (const [sessionID, st] of this.runs) {
+      if (this.runs.size <= MAX_TRACKED_RUNS) return
+      if (st.phase === "running") continue
+      this.runs.delete(sessionID)
+    }
   }
 
   push(sessionID: string, delta: string, now: number): void {
@@ -332,7 +403,7 @@ const definition: Plugin.Definition = {
     const isActive = () => gen.active === mine
 
     const options = resolveOptions(ctx.options)
-    configureDebug(options.debug || !!process.env["TPS_DEBUG"])
+    configureDebug(options.debug || isEnvEnabled(process.env["TPS_DEBUG"]))
 
     const tracker = new TpsTracker(options)
     const [version, setVersion] = createSignal(0)
