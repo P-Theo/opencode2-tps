@@ -12,7 +12,7 @@ When the run ends, the number freezes at the run average and stays there until t
 
 ## Install
 
-Built against the OpenCode 2 preview and tested on `0.0.0-beta-17595`. The TUI plugin API is still moving, so a much newer or older build may drop the indicator without an error: a renamed event stops arriving, and an unknown composer slot gets quietly rerouted. If the figure never appears, check your CLI version first.
+Built against the OpenCode 2 preview. The earliest known compatible beta is `0.0.0-beta-17595`; the latest tested beta is `0.0.0-beta-17595`. The TUI plugin API is still moving, so a much newer or older build may drop the indicator without an error: a renamed event stops arriving, and an unknown composer slot gets quietly rerouted. If the figure never appears, check your CLI version first.
 
 Add the package to `~/.config/opencode/cli.json`:
 

@@ -22,11 +22,27 @@ jobs:
           bun-version: 1.3.12
 
       - run: npm ci
+      - run: npm run check:compatibility
+
+      - name: Verify the official OpenCode 2 beta release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(node -p 'require("./package.json").devDependencies["@opencode-ai/cli"]')
+          gh api "repos/anomalyco/opencode-beta/releases/tags/v${version}" --silent
+
       - run: npm run lint
       - run: npm run check
       - run: npm test
       - run: npm run build
 
-      # dist/ is gitignored, so this proves a clean clone still produces the
-      # tarball. Scripts are skipped because prepack would repeat every step above.
-      - run: npm pack --dry-run --ignore-scripts
+      # dist/ is gitignored, so this also proves a clean clone produces a package
+      # whose bundled entrypoint can be installed and imported with its host peers.
+      - name: Verify the packed artifact
+        run: |
+          mkdir -p "$RUNNER_TEMP/tps-pack" "$RUNNER_TEMP/tps-install"
+          npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP/tps-pack"
+          opentui=$(node -p 'require("./node_modules/@opentui/solid/package.json").version')
+          solid=$(node -p 'require("./node_modules/solid-js/package.json").version')
+          npm install --ignore-scripts --prefix "$RUNNER_TEMP/tps-install" "$RUNNER_TEMP"/tps-pack/opencode2-tps-*.tgz "@opentui/solid@${opentui}" "solid-js@${solid}"
+          node --input-type=module -e 'await import(process.argv[1])' "file://$RUNNER_TEMP/tps-install/node_modules/opencode2-tps/dist/tui.js"

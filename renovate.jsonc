@@ -1,0 +1,56 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "draftPR": true,
+  "automerge": false,
+  "enabledManagers": ["npm", "custom.regex"],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/^README\\.md$/"],
+      "matchStrings": ["latest tested beta is `(?<currentValue>0\\.0\\.0-beta-\\d+)`"],
+      "depNameTemplate": "anomalyco/opencode-beta",
+      "datasourceTemplate": "github-releases",
+      "versioningTemplate": "npm",
+      "extractVersionTemplate": "^v(?<version>.*)$"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "Do not open unrelated npm dependency PRs",
+      "matchManagers": ["npm"],
+      "enabled": false
+    },
+    {
+      "description": "Update the installable OpenCode 2 compatibility packages from their beta tag",
+      "matchManagers": ["npm"],
+      "matchDepNames": ["@opencode-ai/cli", "@opencode-ai/plugin", "@opencode-ai/theme"],
+      "enabled": true,
+      "followTag": "beta",
+      "ignoreUnstable": false,
+      "minimumReleaseAge": "1 hour",
+      "groupName": "OpenCode 2 beta compatibility",
+      "semanticCommitType": "chore",
+      "semanticCommitScope": "compatibility",
+      "assignees": ["P-Theo"],
+      "prBodyNotes": [
+        "### Manual compatibility gate\n\nCI verifies the API types, tests, build, package import, exact `opencode2` version, and corresponding `anomalyco/opencode-beta` GitHub Release. Before marking this draft ready and merging it, verify:\n\n- [ ] TPS appears while normal text streams\n- [ ] TPS remains active during reasoning and tool-input streaming\n- [ ] The final average freezes after completion\n- [ ] A new prompt resets the figure\n- [ ] The orchestrator and sub-agent views retain their documented behavior"
+      ]
+    },
+    {
+      "description": "Keep every OpenCode 2 compatibility target in one manually verified PR",
+      "matchDatasources": ["github-releases"],
+      "matchPackageNames": ["anomalyco/opencode-beta"],
+      "allowedVersions": "/^0\\.0\\.0-beta-\\d{5,6}$/",
+      "ignoreUnstable": false,
+      "minimumReleaseAge": "1 hour",
+      "groupName": "OpenCode 2 beta compatibility",
+      "semanticCommitType": "chore",
+      "semanticCommitScope": "compatibility",
+      "assignees": ["P-Theo"],
+      "prBodyNotes": [
+        "### Manual compatibility gate\n\nCI verifies the API types, tests, build, package import, exact `opencode2` version, and corresponding `anomalyco/opencode-beta` GitHub Release. Before marking this draft ready and merging it, verify:\n\n- [ ] TPS appears while normal text streams\n- [ ] TPS remains active during reasoning and tool-input streaming\n- [ ] The final average freezes after completion\n- [ ] A new prompt resets the figure\n- [ ] The orchestrator and sub-agent views retain their documented behavior"
+      ]
+    }
+  ]
+}
