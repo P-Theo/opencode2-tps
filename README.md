@@ -10,6 +10,10 @@ While a session streams, the top right of the composer shows the estimated token
 
 When the run ends, the number freezes at the run average and stays there until the next run starts. Nothing is shown on the home screen, or before the first token of a run.
 
+<p align="center">
+  <img src="docs/screenshots/opencode2_tps.png" width="750" alt="Composer showing live token-throughput indicator" />
+</p>
+
 ## Install
 
 Built against the OpenCode 2 preview. The earliest known compatible beta is `0.0.0-beta-17595`; the latest tested beta is `0.0.0-beta-17595`. The TUI plugin API is still moving, so a much newer or older build may drop the indicator without an error: a renamed event stops arriving, and an unknown composer slot gets quietly rerouted. If the figure never appears, check your CLI version first.
@@ -76,6 +80,10 @@ For more detail, see [Architecture](docs/development.md#architecture).
 Every output event carries the ID of the session that produced it, so each session is measured on its own.
 
 A sub-agent streams under its own child session ID. While it works, the orchestrator's number stops moving and holds the average of the output the orchestrator produced before delegating. Open the sub-agent's session to watch its live throughput.
+
+<p align="center">
+  <img src="docs/screenshots/subagent_tps.png" width="750" alt="Sub-agent session showing its own live throughput indicator" />
+</p>
 
 ## Development
 
