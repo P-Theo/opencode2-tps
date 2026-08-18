@@ -1,4 +1,4 @@
-# toolbox.tps (OpenCode V2 TUI plugin)
+# opencode2-tps (OpenCode V2 TUI plugin)
 
 Live token-throughput indicator for the OpenCode 2 prompt composer.
 
@@ -48,9 +48,9 @@ it stays clear of the crowded prompt-footer status row.
   generation without disposing the previous one; only the newest counts and
   renders.
 
-Single self-contained file (`tps.tsx`): V2 TUI discovery loads direct files
-from `plugins/tui/`, so the tracker, slot claim, and plugin definition all live
-together. The SDK is used type-only; the default export is structural.
+Single self-contained source file (`tps.tsx`): V2 TUI discovery loads direct
+files from `plugins/tui/`, so the tracker, slot claim, and plugin definition all
+live together. The SDK is used type-only; the default export is structural.
 
 ### Known limitation
 
@@ -60,29 +60,33 @@ throughput.
 
 ## Install
 
-Install it as a symlink leaf:
+Add the package to `~/.config/opencode/cli.json` and restart the TUI. There is
+no separate install step: OpenCode fetches package entries itself into
+`~/.cache/opencode/packages/`.
 
-```sh
-mkdir -p ~/.config/opencode/plugins/tui
-ln -sfn "$PWD/tps.tsx" ~/.config/opencode/plugins/tui/tps.tsx
+```json
+{
+  "plugins": ["opencode2-tps"]
+}
 ```
 
-The V2 TUI discovers `~/.config/opencode/plugins/tui/tps.tsx` on start and
-hot-reloads it on edit.
-
-## Configuration
-
-Discovered files receive no options — the host only passes `options` for an
-explicit `cli.json` entry. To configure the plugin, replace the symlink with a
-`plugins` entry in `~/.config/opencode/cli.json`:
+Use the object form to pass options:
 
 ```json
 {
   "plugins": [
-    { "package": "/absolute/path/to/tps.tsx", "options": { "display": "tps", "refreshHz": 12 } }
+    { "package": "opencode2-tps", "options": { "display": "tps", "refreshHz": 12 } }
   ]
 }
 ```
+
+Editing the entry requires a TUI restart; a running TUI does not re-read
+`cli.json` plugin entries reliably.
+
+The plugin id is `opencode2.tps`; disable it without removing the entry by
+adding `"-opencode2.tps"` after it.
+
+## Configuration
 
 | Option | Default | Range | Meaning |
 |---|---|---|---|
@@ -102,10 +106,43 @@ plugin never fails to load because of a bad option.
 ## Development
 
 ```sh
-npm ci          # pinned dev/runtime deps (typecheck + JSX runtime resolution)
+npm ci          # pinned dev deps (typecheck + JSX runtime resolution)
 npm run check   # tsc --noEmit, including the test file
 npm test        # bun test: tracker, option parsing, setup wiring
+npm run build   # dist/tui.js, the published entrypoint
 ```
+
+Working on the plugin against a live TUI: point `cli.json` at the source file
+instead of the package, which keeps both options and hot reload.
+
+```json
+{
+  "plugins": [{ "package": "/absolute/path/to/tps.tsx", "options": { "debug": true } }]
+}
+```
+
+A symlink into `~/.config/opencode/plugins/tui/` also hot-reloads, but
+discovered files receive no options — the host only passes `options` for an
+explicit `cli.json` entry.
+
+```sh
+mkdir -p ~/.config/opencode/plugins/tui
+ln -sfn "$PWD/tps.tsx" ~/.config/opencode/plugins/tui/tps.tsx
+```
+
+### Why the package ships compiled JS
+
+Solid needs a compile-time transform; JSX left to a runtime `jsx()` factory
+renders once and never updates. The host applies that transform (via
+`@opentui/solid`'s Bun plugin) only to files **outside** `node_modules`, and an
+installed package always lives inside one — so `npm run build` runs the same
+Babel presets ahead of time and `dist/tui.js` is what gets published.
+
+`solid-js` and `@opentui/solid` are optional peer dependencies, not
+dependencies: the host injects its own copies into external plugins, and the
+plugin must share them to stay on one reactive graph and one renderer.
+Declaring them as real dependencies would add ~95 MB of never-loaded modules to
+every install.
 
 `slotprobe.tsx` is a dev-only utility (not linked by the installer): it renders
 labeled markers into candidate slots so placements can be inspected visually.
@@ -116,3 +153,13 @@ Debug logging is off by default — an unconfigured install writes nothing to
 disk. Enable it with the `debug` option, or with `TPS_DEBUG=1` in the TUI
 process's environment when running from the symlink install. The log goes to
 `<tmpdir>/tps-debug-<pid>.log`.
+
+### Release
+
+```sh
+npm pack        # runs check + test + build via prepack; inspect the tarball
+npm publish     # same prepack chain
+```
+
+The published tarball is `dist/tui.js`, `package.json` and this README —
+`exports["./tui"]` is what the host resolves for a package entry.

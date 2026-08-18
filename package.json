@@ -1,23 +1,54 @@
 {
-  "name": "opencode-tps",
-  "version": "0.1.0",
-  "private": true,
+  "name": "opencode2-tps",
+  "version": "0.2.0",
+  "description": "Live token-throughput indicator for the OpenCode 2 TUI prompt composer",
+  "license": "MIT",
   "type": "module",
-  "exports": "./tps.tsx",
-  "dependencies": {
-    "@opentui/core": "^0.5.3",
-    "@opentui/solid": "^0.5.3",
+  "keywords": [
+    "opencode",
+    "opencode2",
+    "tui",
+    "plugin",
+    "tps",
+    "tokens",
+    "throughput"
+  ],
+  "exports": {
+    ".": "./dist/tui.js",
+    "./tui": "./dist/tui.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "peerDependencies": {
+    "@opentui/solid": ">=0.5.3",
     "solid-js": "^1.9.0"
   },
+  "peerDependenciesMeta": {
+    "@opentui/solid": {
+      "optional": true
+    },
+    "solid-js": {
+      "optional": true
+    }
+  },
   "devDependencies": {
-    "@opencode-ai/plugin": "0.0.0-beta-17519",
-    "@opencode-ai/theme": "0.0.0-beta-17519",
+    "@babel/core": "^7.29.7",
+    "@babel/preset-typescript": "^7.29.7",
+    "@opencode-ai/plugin": "0.0.0-beta-17595",
+    "@opencode-ai/theme": "0.0.0-beta-17595",
+    "@opentui/core": "^0.5.3",
+    "@opentui/solid": "^0.5.3",
     "@types/bun": "^1.3.14",
     "@types/node": "^24.0.0",
+    "babel-preset-solid": "^1.9.12",
+    "solid-js": "^1.9.0",
     "typescript": "^5.9.0"
   },
   "scripts": {
+    "build": "node build.mjs",
     "check": "tsc --noEmit",
-    "test": "bun test"
+    "test": "bun test",
+    "prepack": "npm run check && npm test && npm run build"
   }
 }

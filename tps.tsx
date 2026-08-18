@@ -292,7 +292,7 @@ type FinishEvent = EventOf<
 >
 
 const definition: Plugin.Definition = {
-  id: "toolbox.tps",
+  id: "opencode2.tps",
   setup(ctx) {
     // Generation guard: the host may start a new generation of this plugin
     // without disposing the previous one (observed on server (re)attach), and

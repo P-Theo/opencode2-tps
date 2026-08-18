@@ -6,7 +6,7 @@ import type { Plugin } from "@opencode-ai/plugin/tui"
 import { createMemo } from "solid-js"
 
 const definition: Plugin.Definition = {
-  id: "toolbox.tps.slotprobe",
+  id: "opencode2.tps.slotprobe",
   setup(ctx) {
     // `ctx.theme` is a reactive getter: colours are read inside render so the
     // probe follows a theme switch instead of freezing the startup palette.
