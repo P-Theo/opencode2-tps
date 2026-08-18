@@ -80,8 +80,9 @@ Use the object form to pass options:
 }
 ```
 
-Editing the entry requires a TUI restart; a running TUI does not re-read
-`cli.json` plugin entries reliably.
+A running TUI re-reads `cli.json` when it changes, so adding, removing or
+re-pointing the entry takes effect without a restart. Changing the *version* of
+an installed package does need one, because no watched file changed.
 
 The plugin id is `opencode2.tps`; disable it without removing the entry by
 adding `"-opencode2.tps"` after it.
@@ -113,8 +114,12 @@ npm test        # bun test: tracker, option parsing, setup wiring
 npm run build   # dist/tui.js, the published entrypoint
 ```
 
-Working on the plugin against a live TUI: point `cli.json` at the source file
-instead of the package, which keeps both options and hot reload.
+### Running against a live TUI
+
+Point `cli.json` at the source file. `package` accepts an absolute path, a
+`file://` URL, or a path relative to `cli.json`, and the host watches the target
+even outside its config directory: saving `tps.tsx` runs the plugin's cleanup and
+re-runs `setup` in every open TUI, with no restart.
 
 ```json
 {
@@ -122,14 +127,32 @@ instead of the package, which keeps both options and hot reload.
 }
 ```
 
-A symlink into `~/.config/opencode/plugins/tui/` also hot-reloads, but
-discovered files receive no options — the host only passes `options` for an
-explicit `cli.json` entry.
+Auto-discovery from `~/.config/opencode/plugins/tui/` (a copy or symlink) also
+hot-reloads, but discovered files receive no options — the host only passes
+`options` for an explicit `cli.json` entry — so prefer the path entry above.
+Discovery is still the simplest way to load `slotprobe.tsx`, which takes none.
+
+### Verifying the published artifact
+
+The path entry above loads `tps.tsx` and lets the host apply its Solid
+transform; an installed package instead loads the pre-built `dist/tui.js` from
+inside `node_modules`, where the host applies no transform (see below). The two
+are different code paths, so a working dev loop says nothing about the tarball.
+Install the pack output and point `cli.json` at the result to exercise the real
+one:
 
 ```sh
-mkdir -p ~/.config/opencode/plugins/tui
-ln -sfn "$PWD/tps.tsx" ~/.config/opencode/plugins/tui/tps.tsx
+npm pack --pack-destination /tmp
+mkdir -p /tmp/tps-verify && cd /tmp/tps-verify && npm init -y
+npm i /tmp/opencode2-tps-<version>.tgz
+# cli.json: { "package": "/tmp/tps-verify/node_modules/opencode2-tps/dist/tui.js" }
 ```
+
+That covers the bundle. Registry resolution and the `exports` subpath are only
+covered by a real install, so publish a prerelease
+(`npm publish --tag next` from a `-rc.N` version), install it by specifier, and
+promote the release version once it checks out. Prereleases never become
+`latest`.
 
 ### Why the package ships compiled JS
 
@@ -145,21 +168,23 @@ plugin must share them to stay on one reactive graph and one renderer.
 Declaring them as real dependencies would add ~95 MB of never-loaded modules to
 every install.
 
-`slotprobe.tsx` is a dev-only utility (not linked by the installer): it renders
+`slotprobe.tsx` is a dev-only utility, excluded from the tarball: it renders
 labeled markers into candidate slots so placements can be inspected visually.
-Link it manually into `~/.config/opencode/plugins/tui/` to use it, and remove
-the link afterwards.
+Load it by symlinking it into `~/.config/opencode/plugins/tui/`, and remove the
+link afterwards.
 
 Debug logging is off by default — an unconfigured install writes nothing to
 disk. Enable it with the `debug` option, or with `TPS_DEBUG=1` in the TUI
-process's environment when running from the symlink install. The log goes to
-`<tmpdir>/tps-debug-<pid>.log`.
+process's environment when the plugin was auto-discovered and therefore got no
+options. The log goes to `<tmpdir>/tps-debug-<pid>.log`, one file per TUI
+process.
 
 ### Release
 
 ```sh
-npm pack        # runs check + test + build via prepack; inspect the tarball
-npm publish     # same prepack chain
+npm pack                  # runs lint + check + test + build via prepack
+npm publish --tag next    # prerelease versions only, for install verification
+npm publish               # release, after the prerelease checks out
 ```
 
 The published tarball is `dist/tui.js`, `package.json` and this README —
