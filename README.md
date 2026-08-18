@@ -35,7 +35,15 @@ To set options, use the object form:
 }
 ```
 
-A running TUI picks up `cli.json` changes immediately. Upgrading an installed version does need a restart.
+A running TUI picks up `cli.json` changes immediately. On first use it installs the package into its own cache, `~/.cache/opencode/packages/opencode2-tps/` on Linux.
+
+That cache is keyed on the entry text and is never refreshed once it exists, so a restart alone will not pick up a new release. To upgrade, delete the directory and restart:
+
+```sh
+rm -rf ~/.cache/opencode/packages/opencode2-tps
+```
+
+To pin a version instead, put the range in the entry — `"opencode2-tps@0.1.0"`. Every distinct entry gets its own cache directory.
 
 The plugin ID is `opencode2.tps`. To switch it off without losing the entry and its options, add `"-opencode2.tps"` after it:
 
