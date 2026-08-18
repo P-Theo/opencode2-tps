@@ -2,18 +2,28 @@
 import type { Plugin } from "@opencode-ai/plugin/tui"
 import { createMemo, createSignal, Show } from "solid-js"
 import { appendFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 
 // ---------------------------------------------------------------------------
 // debug
+//
+// Off unless asked for: an unconfigured install must never touch disk. The log
+// file is per-process so concurrent TUIs (and other users) cannot collide in
+// the shared temp directory.
 
-// setup/cleanup lines are unconditional (rare, useful); verbose probes require TPS_DEBUG=1.
-const DEBUG = !!process.env.TPS_DEBUG
-const DEBUG_LOG = "/tmp/tps-debug.log"
+const debugState = { enabled: false, file: "" }
 
-function mark(line: string, verbose = false): void {
-  if (verbose && !DEBUG) return
+function configureDebug(enabled: boolean): void {
+  if (!enabled) return
+  debugState.enabled = true
+  if (!debugState.file) debugState.file = join(tmpdir(), `tps-debug-${process.pid}.log`)
+}
+
+function mark(line: string): void {
+  if (!debugState.enabled) return
   try {
-    appendFileSync(DEBUG_LOG, `${new Date().toISOString()} ${line}\n`)
+    appendFileSync(debugState.file, `${new Date().toISOString()} ${line}\n`)
   } catch {
     // debug only; never break the host
   }
@@ -22,16 +32,29 @@ function mark(line: string, verbose = false): void {
 // ---------------------------------------------------------------------------
 // tuning
 
-const SAMPLE_WINDOW_MS = 5_000 // rolling window for live TPS
-const LIVE_STALE_MS = 1_500 // no delta for this long => not live
-const SINGLE_SAMPLE_MIN_MS = 250
-const SINGLE_SAMPLE_MAX_MS = 1_000
-const TAIL_MAX_MS = 1_000 // capped trailing gap after the last sample
-const GAP_CAP_MS = 2_000 // inter-delta gaps count at most this long (excludes tool time)
+const BYTES_PER_TOKEN = 5
+
+export interface TpsConfig {
+  readonly sampleWindowMs: number // rolling window for live TPS
+  readonly liveStaleMs: number // no delta for this long => fall back to the run average
+  readonly singleSampleMinMs: number
+  readonly singleSampleMaxMs: number
+  readonly tailMaxMs: number // capped trailing gap after the last sample
+  readonly gapCapMs: number // inter-delta gaps count at most this long (excludes tool time)
+}
+
+export const DEFAULT_CONFIG: TpsConfig = {
+  sampleWindowMs: 5_000,
+  liveStaleMs: 1_500,
+  singleSampleMinMs: 250,
+  singleSampleMaxMs: 1_000,
+  tailMaxMs: 1_000,
+  gapCapMs: 2_000,
+}
 // The frozen final average stays visible until the next prompt starts a new run.
 
-function estimateTokens(text: string): number {
-  return Math.max(1, Math.ceil(new TextEncoder().encode(text).length / 5))
+function estimateTokens(bytes: number): number {
+  return Math.ceil(bytes / BYTES_PER_TOKEN)
 }
 
 function formatTps(value: number): string {
@@ -44,7 +67,7 @@ function formatTps(value: number): string {
 // tracker (UI-free)
 
 interface StreamSample {
-  readonly tokens: number
+  readonly bytes: number
   readonly timestamp: number
 }
 
@@ -56,15 +79,13 @@ interface Frozen {
 interface RunState {
   phase: "running" | "ended"
   samples: StreamSample[]
-  tokens: number // estimated output tokens this run
+  bytes: number // raw output bytes this run (tokens are derived from the total)
   activeMs: number // accumulated streaming wall-clock (gaps capped)
   lastSampleAt: number | null
-  usageStart: number | null // exact cumulative output+reasoning tokens at run start
-  usageEnd: number | null // latest exact cumulative during the run
   frozen: Frozen | null
 }
 
-interface TpsValue {
+export interface TpsValue {
   readonly tps: number
   readonly tokens: number
   readonly frozen: boolean
@@ -72,21 +93,16 @@ interface TpsValue {
 
 export class TpsTracker {
   private readonly runs = new Map<string, RunState>()
-  private readonly usage = new Map<string, number>() // last known exact cumulative per session
+  private readonly config: TpsConfig
+
+  constructor(config: TpsConfig = DEFAULT_CONFIG) {
+    this.config = config
+  }
 
   private state(sessionID: string): RunState {
     let st = this.runs.get(sessionID)
     if (!st) {
-      st = {
-        phase: "ended",
-        samples: [],
-        tokens: 0,
-        activeMs: 0,
-        lastSampleAt: null,
-        usageStart: null,
-        usageEnd: null,
-        frozen: null,
-      }
+      st = { phase: "ended", samples: [], bytes: 0, activeMs: 0, lastSampleAt: null, frozen: null }
       this.runs.set(sessionID, st)
     }
     return st
@@ -96,11 +112,9 @@ export class TpsTracker {
     const st = this.state(sessionID)
     st.phase = "running"
     st.samples = []
-    st.tokens = 0
+    st.bytes = 0
     st.activeMs = 0
     st.lastSampleAt = null
-    st.usageStart = this.usage.get(sessionID) ?? null
-    st.usageEnd = null
     st.frozen = null
   }
 
@@ -109,27 +123,15 @@ export class TpsTracker {
     const st = this.state(sessionID)
     if (st.phase !== "running") this.beginRun(sessionID) // execution.started missed
     st.frozen = null
-    const tokens = estimateTokens(delta)
-    st.samples.push({ tokens, timestamp: now })
-    st.tokens += tokens
-    if (st.lastSampleAt === null) st.activeMs += SINGLE_SAMPLE_MIN_MS
-    else st.activeMs += Math.min(Math.max(0, now - st.lastSampleAt), GAP_CAP_MS)
+    // Bytes accumulate; tokens are derived from the run total, so providers
+    // that emit 1-3 byte deltas are not rounded up on every single one.
+    const bytes = Buffer.byteLength(delta, "utf8")
+    st.samples.push({ bytes, timestamp: now })
+    st.bytes += bytes
+    // The first sample of a run contributes no elapsed time; the floor is
+    // applied once, where the average is computed.
+    if (st.lastSampleAt !== null) st.activeMs += Math.min(Math.max(0, now - st.lastSampleAt), this.config.gapCapMs)
     st.lastSampleAt = now
-  }
-
-  // Tool execution starts: text pauses, so reset the live window (not the run
-  // totals) — post-tool streaming then resumes with fresh samples.
-  clearLive(sessionID: string): void {
-    const st = this.runs.get(sessionID)
-    if (!st) return
-    st.samples = []
-    st.lastSampleAt = null
-  }
-
-  noteUsage(sessionID: string, cumulativeOutputTokens: number): void {
-    this.usage.set(sessionID, cumulativeOutputTokens)
-    const st = this.runs.get(sessionID)
-    if (st && st.phase === "running") st.usageEnd = cumulativeOutputTokens
   }
 
   finish(sessionID: string, now: number): void {
@@ -137,83 +139,157 @@ export class TpsTracker {
     if (!st || st.phase === "ended") return
     st.phase = "ended"
     if (st.lastSampleAt !== null) {
-      st.activeMs += Math.min(Math.max(0, now - st.lastSampleAt), TAIL_MAX_MS)
+      st.activeMs += Math.min(Math.max(0, now - st.lastSampleAt), this.config.tailMaxMs)
       st.lastSampleAt = null
     }
-    const exact =
-      st.usageStart !== null && st.usageEnd !== null && st.usageEnd > st.usageStart
-        ? st.usageEnd - st.usageStart
-        : null
-    // Display uses the estimate even when exact usage exists: providers (esp.
-    // routers) report counts that diverge wildly from what actually streamed
-    // on screen, and the frozen average should be continuous with the live one.
-    const tokens = st.tokens
+    const tokens = estimateTokens(st.bytes)
     if (tokens <= 0) {
       this.runs.delete(sessionID)
       return
     }
-    const seconds = Math.max(st.activeMs, SINGLE_SAMPLE_MIN_MS) / 1000
+    const seconds = Math.max(st.activeMs, this.config.singleSampleMinMs) / 1000
     st.frozen = { tps: tokens / seconds, tokens }
     st.samples = []
-    mark(
-      `finish sid=${sessionID} est=${st.tokens} exact=${exact ?? "n/a"} activeMs=${st.activeMs} tps=${st.frozen.tps.toFixed(1)}`,
-      true,
-    )
+    mark(`finish sid=${sessionID} tokens=${tokens} activeMs=${st.activeMs} tps=${st.frozen.tps.toFixed(1)}`)
   }
 
-  private live(sessionID: string, now: number): number {
-    const st = this.runs.get(sessionID)
-    if (!st || st.phase !== "running") return -1
-    const cutoff = now - SAMPLE_WINDOW_MS
+  evict(sessionID: string): void {
+    this.runs.delete(sessionID)
+  }
+
+  hasRunning(): boolean {
+    for (const st of this.runs.values()) if (st.phase === "running") return true
+    return false
+  }
+
+  // Throughput over the rolling window, or -1 when the window holds nothing
+  // recent enough to be called "live".
+  private live(st: RunState, now: number): number {
+    const cutoff = now - this.config.sampleWindowMs
     const active = st.samples.filter((s) => s.timestamp >= cutoff)
     const last = active.at(-1)
-    if (!last || now - last.timestamp > LIVE_STALE_MS) return -1
-    const totalTokens = active.reduce((sum, s) => sum + s.tokens, 0)
-    let durationMs: number
     const first = active[0]
-    if (!first) return -1
+    if (!last || !first || now - last.timestamp > this.config.liveStaleMs) return -1
+    let bytes = 0
+    for (const s of active) bytes += s.bytes
+    const tokens = bytes / BYTES_PER_TOKEN
+    let durationMs: number
     if (active.length < 2) {
-      durationMs = Math.max(SINGLE_SAMPLE_MIN_MS, Math.min(now - first.timestamp, SINGLE_SAMPLE_MAX_MS))
+      durationMs = Math.max(
+        this.config.singleSampleMinMs,
+        Math.min(now - first.timestamp, this.config.singleSampleMaxMs),
+      )
     } else {
+      // Gaps are capped exactly as in push(): a pause for tool execution must
+      // not be charged to the model's throughput.
       let gaps = 0
-      let prev: StreamSample | undefined = first
-      for (const s of active.slice(1)) {
-        if (prev) gaps += Math.max(0, s.timestamp - prev.timestamp)
-        prev = s
+      let prev = first.timestamp
+      for (const s of active) {
+        gaps += Math.min(Math.max(0, s.timestamp - prev), this.config.gapCapMs)
+        prev = s.timestamp
       }
-      gaps += Math.min(now - last.timestamp, TAIL_MAX_MS)
-      durationMs = Math.max(gaps, SINGLE_SAMPLE_MIN_MS)
+      gaps += Math.min(now - last.timestamp, this.config.tailMaxMs)
+      durationMs = Math.max(gaps, this.config.singleSampleMinMs)
     }
-    return (totalTokens / durationMs) * 1000
+    return (tokens / durationMs) * 1000
   }
 
   value(sessionID: string, now: number): TpsValue | null {
     const st = this.runs.get(sessionID)
     if (!st) return null
     if (st.frozen) return { tps: st.frozen.tps, tokens: st.frozen.tokens, frozen: true }
-    const tps = this.live(sessionID, now)
-    if (tps < 0) return null
-    return { tps, tokens: st.tokens, frozen: false }
+    if (st.phase !== "running") return null
+    const tokens = estimateTokens(st.bytes)
+    if (tokens <= 0) return null
+    const live = this.live(st, now)
+    if (live >= 0) return { tps: live, tokens, frozen: false }
+    // Live window empty (long tool call, sub-agent turn): keep showing the
+    // run-so-far average instead of blanking. It uses the same elapsed-time
+    // formula finish() will use, so freezing does not make the number jump.
+    const tail = st.lastSampleAt === null ? 0 : Math.min(Math.max(0, now - st.lastSampleAt), this.config.tailMaxMs)
+    const seconds = Math.max(st.activeMs + tail, this.config.singleSampleMinMs) / 1000
+    return { tps: tokens / seconds, tokens, frozen: false }
   }
 
-  prune(now: number): boolean {
-    let changed = false
-    const cutoff = now - SAMPLE_WINDOW_MS
-    for (const [, st] of this.runs) {
-      const pruned = st.samples.filter((s) => s.timestamp >= cutoff)
-      if (pruned.length !== st.samples.length) {
-        st.samples = pruned
-        changed = true
-      }
+  prune(now: number): void {
+    const cutoff = now - this.config.sampleWindowMs
+    for (const st of this.runs.values()) {
       // Finished runs keep their frozen average until the next run replaces
-      // them, so there is nothing else to prune here.
+      // them, so only the live sample window needs trimming.
+      const oldest = st.samples[0]
+      if (oldest && oldest.timestamp < cutoff) st.samples = st.samples.filter((s) => s.timestamp >= cutoff)
     }
-    return changed
   }
 }
 
 // ---------------------------------------------------------------------------
+// options
+//
+// `ctx.options` is host-supplied JSON (Record<string, any>), so this is a real
+// parsing boundary: every value is validated and clamped, and anything invalid
+// falls back to the default rather than propagating NaN into the arithmetic.
+
+const DISPLAY_MODES = { both: true, tokens: true, tps: true } as const
+export type DisplayMode = keyof typeof DISPLAY_MODES
+
+export interface TpsOptions extends TpsConfig {
+  readonly display: DisplayMode
+  readonly refreshHz: number
+  readonly debug: boolean
+}
+
+export const DEFAULT_OPTIONS: TpsOptions = {
+  ...DEFAULT_CONFIG,
+  display: "both",
+  refreshHz: 8,
+  debug: false,
+}
+
+function clampNumber(raw: unknown, fallback: number, min: number, max: number): number {
+  if (!Number.isFinite(raw)) return fallback
+  return Math.min(Math.max(raw as number, min), max)
+}
+
+export function resolveOptions(raw: Readonly<Record<string, unknown>>): TpsOptions {
+  const display = raw["display"]
+  const singleSampleMinMs = clampNumber(raw["singleSampleMinMs"], DEFAULT_OPTIONS.singleSampleMinMs, 50, 5_000)
+  return {
+    display: Object.hasOwn(DISPLAY_MODES, display as PropertyKey) ? (display as DisplayMode) : DEFAULT_OPTIONS.display,
+    refreshHz: clampNumber(raw["refreshHz"], DEFAULT_OPTIONS.refreshHz, 1, 60),
+    sampleWindowMs: clampNumber(raw["sampleWindowMs"], DEFAULT_OPTIONS.sampleWindowMs, 1_000, 60_000),
+    liveStaleMs: clampNumber(raw["liveStaleMs"], DEFAULT_OPTIONS.liveStaleMs, 250, 30_000),
+    singleSampleMinMs,
+    // The ceiling can never sit below the floor, whatever the user wrote.
+    singleSampleMaxMs: Math.max(
+      singleSampleMinMs,
+      clampNumber(raw["singleSampleMaxMs"], DEFAULT_OPTIONS.singleSampleMaxMs, 50, 10_000),
+    ),
+    tailMaxMs: clampNumber(raw["tailMaxMs"], DEFAULT_OPTIONS.tailMaxMs, 0, 10_000),
+    gapCapMs: clampNumber(raw["gapCapMs"], DEFAULT_OPTIONS.gapCapMs, 100, 30_000),
+    debug: raw["debug"] === true,
+  }
+}
+
+export function formatLabel(value: TpsValue, display: DisplayMode): string {
+  if (display === "tokens") return `${value.tokens} tok`
+  if (display === "tps") return `${formatTps(value.tps)} t/s`
+  return `${value.tokens} tok · ${formatTps(value.tps)} t/s`
+}
+
+// ---------------------------------------------------------------------------
 // plugin
+
+// Event payloads are taken from the SDK's own union (via the non-generic
+// `data.listen` signature) rather than restated structurally: handlers are
+// contravariant, so hand-written shapes keep typechecking after a field rename.
+type PluginContext = Parameters<Plugin.Definition["setup"]>[0]
+type AnyEvent = Parameters<Parameters<PluginContext["data"]["listen"]>[0]>[0]["details"]
+type EventOf<Type extends AnyEvent["type"]> = Extract<AnyEvent, { type: Type }>
+
+type DeltaEvent = EventOf<"session.text.delta" | "session.reasoning.delta" | "session.tool.input.delta">
+type FinishEvent = EventOf<
+  "session.execution.succeeded" | "session.execution.failed" | "session.execution.interrupted" | "session.idle"
+>
 
 const definition: Plugin.Definition = {
   id: "toolbox.tps",
@@ -229,53 +305,84 @@ const definition: Plugin.Definition = {
     })
     const isActive = () => gen.active === mine
 
-    const tracker = new TpsTracker()
+    const options = resolveOptions(ctx.options)
+    configureDebug(options.debug || !!process.env["TPS_DEBUG"])
+
+    const tracker = new TpsTracker(options)
     const [version, setVersion] = createSignal(0)
-    const bump = () => setVersion((v) => v + 1)
 
-    mark(`setup ok app=${ctx.app.version} gen=${mine}`)
+    mark(`setup ok app=${ctx.app.version} gen=${mine} display=${options.display} refreshHz=${options.refreshHz}`)
 
-    const onDelta = (e: { data: { sessionID: string; delta: string } }) => {
+    // Rendering is throttled: deltas arrive at 100-200/s, and every bump costs
+    // a memo recompute plus a terminal repaint to move a number no one can read
+    // faster than ~10 Hz. Handlers only set a flag; the timer does the work,
+    // and it only runs while a session is actually streaming.
+    let dirty = false
+    let timer: ReturnType<typeof setInterval> | undefined
+
+    const flush = () => {
+      // A superseded generation stops ticking even if its cleanup never ran.
+      if (!isActive()) {
+        stopTimer()
+        return
+      }
+      const now = Date.now()
+      tracker.prune(now)
+      const running = tracker.hasRunning()
+      // While running, the label is a function of `now` (window ageing, tail
+      // gap), so it is republished every tick regardless of new deltas.
+      if (dirty || running) {
+        dirty = false
+        setVersion((v) => v + 1)
+      }
+      if (!running) stopTimer()
+    }
+
+    function stopTimer(): void {
+      if (timer === undefined) return
+      clearInterval(timer)
+      timer = undefined
+    }
+
+    const touch = () => {
+      dirty = true
+      if (timer !== undefined) return
+      timer = setInterval(flush, Math.round(1000 / options.refreshHz))
+      timer.unref?.()
+    }
+
+    const onDelta = (e: DeltaEvent) => {
       if (!isActive()) return
       tracker.push(e.data.sessionID, e.data.delta, Date.now())
-      bump()
+      touch()
     }
-    const onFinish = (e: { data: { sessionID: string } }) => {
+    const onFinish = (e: FinishEvent) => {
       if (!isActive()) return
       tracker.finish(e.data.sessionID, Date.now())
-      bump()
+      touch()
     }
 
     const unsubs = [
       ctx.data.on("session.execution.started", (e) => {
         if (!isActive()) return
         tracker.beginRun(e.data.sessionID)
-        bump()
+        touch()
       }),
       ctx.data.on("session.text.delta", onDelta),
       ctx.data.on("session.reasoning.delta", onDelta),
-      ctx.data.on("session.tool.input.started", (e) => {
-        if (!isActive()) return
-        tracker.clearLive(e.data.sessionID)
-        bump()
-      }),
-      ctx.data.on("session.usage.updated", (e) => {
-        if (!isActive()) return
-        const exact = e.data.tokens.output + e.data.tokens.reasoning
-        mark(`usage sid=${e.data.sessionID} output=${e.data.tokens.output} reasoning=${e.data.tokens.reasoning}`, true)
-        tracker.noteUsage(e.data.sessionID, exact)
-      }),
+      // Tool arguments are model output too: without this the indicator blanks
+      // partway through every large write/edit while generation is at full rate.
+      ctx.data.on("session.tool.input.delta", onDelta),
       ctx.data.on("session.execution.succeeded", onFinish),
       ctx.data.on("session.execution.failed", onFinish),
       ctx.data.on("session.execution.interrupted", onFinish),
       ctx.data.on("session.idle", onFinish),
+      ctx.data.on("session.deleted", (e) => {
+        if (!isActive()) return
+        tracker.evict(e.data.sessionID)
+        touch()
+      }),
     ]
-
-    const timer = setInterval(() => {
-      if (!isActive()) return
-      tracker.prune(Date.now())
-      bump()
-    }, 1_000)
 
     const unslot = ctx.ui.slot({
       append: "session.composer.top",
@@ -285,7 +392,7 @@ const definition: Plugin.Definition = {
           if (!isActive()) return null
           const v = tracker.value(input.sessionID, Date.now())
           if (!v) return null
-          return `${v.tokens} tok · ${formatTps(v.tps)} t/s`
+          return formatLabel(v, options.display)
         })
         return (
           <Show when={label()}>
@@ -302,7 +409,7 @@ const definition: Plugin.Definition = {
     return () => {
       for (const unsub of unsubs) unsub()
       unslot()
-      clearInterval(timer)
+      stopTimer()
       if (gen.active === mine)
         setGen((d) => {
           d.active = 0

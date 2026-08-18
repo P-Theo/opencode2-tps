@@ -8,9 +8,10 @@
     "jsxImportSource": "@opentui/solid",
     "strict": true,
     "noEmit": true,
+    "allowImportingTsExtensions": true,
     "skipLibCheck": true,
     "noUncheckedIndexedAccess": true,
-    "types": ["node"]
+    "types": ["node", "bun"]
   },
-  "include": ["tps.tsx", "slotprobe.tsx"]
+  "include": ["tps.tsx", "slotprobe.tsx", "tps.test.ts"]
 }

@@ -8,17 +8,15 @@ import { createMemo } from "solid-js"
 const definition: Plugin.Definition = {
   id: "toolbox.tps.slotprobe",
   setup(ctx) {
-    const subdued = ctx.theme.text.subdued
-    const green = ctx.theme.text.feedback.success.default
-    const info = ctx.theme.text.feedback.info.default
-
+    // `ctx.theme` is a reactive getter: colours are read inside render so the
+    // probe follows a theme switch instead of freezing the startup palette.
     const unslots = [
       // Priority candidate: far right of the composer top edge.
       ctx.ui.slot({
         append: "session.composer.top",
         render: () => (
           <box width="100%" flexDirection="row" justifyContent="flex-end">
-            <text fg={green}>{`◆ session.composer.top (right) `}</text>
+            <text fg={ctx.theme.text.feedback.success.default}>{`◆ session.composer.top (right) `}</text>
           </box>
         ),
       }),
@@ -26,7 +24,7 @@ const definition: Plugin.Definition = {
       // Fallback: own line above the footer (kept for reference).
       ctx.ui.slot({
         before: "prompt.footer",
-        render: () => <text fg={info}>{`◆ prompt.footer BEFORE`}</text>,
+        render: () => <text fg={ctx.theme.text.feedback.info.default}>{`◆ prompt.footer BEFORE`}</text>,
       }),
 
       // Fallback experiment: take over the status row, dropping the built-in
@@ -43,7 +41,7 @@ const definition: Plugin.Definition = {
             const cost = ctx.data.session.cost(sid)
             return `${dir}  ·  $${cost.toFixed(2)}`
           })
-          return <text fg={subdued}>{` ${text()}`}</text>
+          return <text fg={ctx.theme.text.subdued}>{` ${text()}`}</text>
         },
       }),
     ]

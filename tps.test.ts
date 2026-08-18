@@ -1,5 +1,8 @@
-import { describe, expect, test } from "bun:test"
-import { TpsTracker } from "./tps.tsx"
+import { afterEach, describe, expect, test } from "bun:test"
+import { existsSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import definition, { DEFAULT_OPTIONS, formatLabel, resolveOptions, TpsTracker } from "./tps.tsx"
 
 // 50 ASCII bytes -> ceil(50/5) = 10 estimated tokens
 const DELTA = "a".repeat(50)
@@ -19,11 +22,46 @@ describe("TpsTracker", () => {
     expect(value?.tps).toBeCloseTo(120)
   })
 
-  test("goes stale when no delta arrives for LIVE_STALE_MS", () => {
+  test("derives tokens from the run's byte total, not per delta", () => {
+    const tracker = new TpsTracker()
+    // ten 2-byte deltas = 20 bytes = 4 tokens (a per-delta floor would say 10)
+    for (let i = 0; i < 10; i += 1) tracker.push("s", "ab", 1000 + i * 10)
+    expect(tracker.value("s", 1090)?.tokens).toBe(4)
+  })
+
+  test("counts multi-byte characters by their utf-8 length", () => {
+    const tracker = new TpsTracker()
+    tracker.push("s", "€".repeat(5), 1000) // 3 bytes each => 15 bytes => 3 tokens
+    expect(tracker.value("s", 1000)?.tokens).toBe(3)
+  })
+
+  test("falls back to the run average when the live window goes stale", () => {
     const tracker = new TpsTracker()
     tracker.push("s", DELTA, 1000)
-    expect(tracker.value("s", 2000)).not.toBeNull()
-    expect(tracker.value("s", 2501)).toBeNull()
+    // inside the stale cutoff: a live single-sample rate
+    expect(tracker.value("s", 2000)?.tps).toBeCloseTo(10)
+    // past it the indicator keeps the run-so-far average instead of blanking
+    const stale = tracker.value("s", 2501)
+    expect(stale?.tokens).toBe(10)
+    expect(stale?.frozen).toBe(false)
+    expect(stale?.tps).toBeCloseTo(10) // 10 tokens / 1000ms capped tail
+  })
+
+  test("the running average is continuous with the frozen one", () => {
+    const tracker = new TpsTracker()
+    tracker.push("s", DELTA, 0)
+    tracker.push("s", DELTA, 500)
+    const running = tracker.value("s", 3000)
+    tracker.finish("s", 3000)
+    const frozen = tracker.value("s", 3000)
+    expect(frozen?.frozen).toBe(true)
+    expect(frozen?.tps).toBeCloseTo(running?.tps ?? -1)
+  })
+
+  test("renders nothing for a run that has produced no output yet", () => {
+    const tracker = new TpsTracker()
+    tracker.beginRun("s")
+    expect(tracker.value("s", 1000)).toBeNull()
   })
 
   test("drops samples older than the rolling window", () => {
@@ -36,16 +74,32 @@ describe("TpsTracker", () => {
     expect(value?.tps).toBeCloseTo(40) // 10 tokens / 250ms floor
   })
 
+  test("caps gaps inside the live window so tool pauses do not drag it down", () => {
+    const tracker = new TpsTracker()
+    tracker.push("s", DELTA, 0)
+    tracker.push("s", DELTA, 3000) // 3s pause, both samples still in the window
+    // uncapped this would read 20/3s = 6.67; the gap counts as 2s at most
+    expect(tracker.value("s", 3000)?.tps).toBeCloseTo(10)
+  })
+
   test("caps inter-delta gaps so tool pauses do not inflate duration", () => {
     const tracker = new TpsTracker()
     tracker.push("s", DELTA, 0)
     tracker.push("s", DELTA, 10_000)
     tracker.finish("s", 10_000)
     const value = tracker.value("s", 10_000)
-    // activeMs = 250 (first) + 2000 (capped gap) + 0 tail => 20 tok / 2.25s
+    // activeMs = 0 (first sample) + 2000 (capped gap) + 0 tail => 20 tok / 2s
     expect(value?.frozen).toBe(true)
     expect(value?.tokens).toBe(20)
-    expect(value?.tps).toBeCloseTo(20 / 2.25, 2)
+    expect(value?.tps).toBeCloseTo(10)
+  })
+
+  test("honours a custom gap cap", () => {
+    const tracker = new TpsTracker({ ...DEFAULT_OPTIONS, gapCapMs: 500 })
+    tracker.push("s", DELTA, 0)
+    tracker.push("s", DELTA, 10_000)
+    tracker.finish("s", 10_000)
+    expect(tracker.value("s", 10_000)?.tps).toBeCloseTo(40) // 20 tok / 500ms
   })
 
   test("keeps the frozen average until the next run", () => {
@@ -61,17 +115,6 @@ describe("TpsTracker", () => {
     // next prompt starts a new run and clears the frozen average
     tracker.beginRun("s")
     expect(tracker.value("s", 200 + 60_001)).toBeNull()
-  })
-
-  test("clearLive hides the live value but keeps run totals", () => {
-    const tracker = new TpsTracker()
-    tracker.beginRun("s")
-    tracker.push("s", DELTA, 1000)
-    tracker.clearLive("s")
-    expect(tracker.value("s", 1000)).toBeNull()
-    tracker.push("s", DELTA, 2000)
-    const value = tracker.value("s", 2000)
-    expect(value?.tokens).toBe(20)
   })
 
   test("starts a run implicitly when execution.started was missed", () => {
@@ -98,9 +141,226 @@ describe("TpsTracker", () => {
     expect(tracker.value("b", 60_000)).toBeNull()
   })
 
+  test("evicts a session's state", () => {
+    const tracker = new TpsTracker()
+    tracker.push("s", DELTA, 0)
+    tracker.finish("s", 100)
+    expect(tracker.value("s", 101)).not.toBeNull()
+    tracker.evict("s")
+    expect(tracker.value("s", 101)).toBeNull()
+  })
+
+  test("reports whether any run is streaming", () => {
+    const tracker = new TpsTracker()
+    expect(tracker.hasRunning()).toBe(false)
+    tracker.push("s", DELTA, 0)
+    expect(tracker.hasRunning()).toBe(true)
+    tracker.finish("s", 100)
+    expect(tracker.hasRunning()).toBe(false)
+  })
+
+  test("prune trims the window without touching run totals", () => {
+    const tracker = new TpsTracker()
+    tracker.push("s", DELTA, 0)
+    tracker.push("s", DELTA, 100)
+    tracker.prune(10_000)
+    const value = tracker.value("s", 10_000)
+    expect(value?.tokens).toBe(20)
+    expect(value?.tps).toBeCloseTo(20 / 1.1) // activeMs 100 + capped 1000ms tail
+  })
+
   test("ignores empty deltas", () => {
     const tracker = new TpsTracker()
     tracker.push("s", "", 1000)
     expect(tracker.value("s", 1000)).toBeNull()
+  })
+})
+
+describe("formatLabel", () => {
+  const value = { tps: 6.5, tokens: 41, frozen: false }
+
+  test("both", () => expect(formatLabel(value, "both")).toBe("41 tok · 6.50 t/s"))
+  test("tokens", () => expect(formatLabel(value, "tokens")).toBe("41 tok"))
+  test("tps", () => expect(formatLabel(value, "tps")).toBe("6.50 t/s"))
+
+  test("scales precision with magnitude", () => {
+    expect(formatLabel({ tps: 62.44, tokens: 1, frozen: false }, "tps")).toBe("62.4 t/s")
+    expect(formatLabel({ tps: 184.6, tokens: 1, frozen: false }, "tps")).toBe("185 t/s")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// setup wiring: the reactive path cannot be rendered headlessly, but the parts
+// that matter (which events are subscribed, and when the render timer runs) are
+// observable through a fake context and a patched setInterval.
+
+type SetupContext = Parameters<typeof definition.setup>[0]
+
+function createHarness(options: Record<string, unknown> = {}) {
+  const handlers = new Map<string, ((event: { data: Record<string, unknown> }) => void)[]>()
+  const generation = { active: 0 }
+  const timer = { callback: undefined as (() => void) | undefined, intervalMs: 0, cleared: 0, created: 0 }
+
+  const realSetInterval = globalThis.setInterval
+  const realClearInterval = globalThis.clearInterval
+  globalThis.setInterval = ((fn: () => void, ms: number) => {
+    timer.callback = fn
+    timer.intervalMs = ms
+    timer.created += 1
+    return { unref: () => {} }
+  }) as unknown as typeof setInterval
+  globalThis.clearInterval = (() => {
+    timer.cleared += 1
+    timer.callback = undefined
+  }) as unknown as typeof clearInterval
+
+  const ctx = {
+    options,
+    app: { version: "test" },
+    theme: { text: { subdued: "#888888" } },
+    storage: {
+      memory: () => [generation, (mutate: (draft: { active: number }) => void) => mutate(generation)] as const,
+    },
+    data: {
+      on: (type: string, handler: (event: { data: Record<string, unknown> }) => void) => {
+        const list = handlers.get(type) ?? []
+        list.push(handler)
+        handlers.set(type, list)
+        return () => handlers.delete(type)
+      },
+    },
+    ui: { slot: () => () => {} },
+  } as unknown as SetupContext
+
+  const cleanup = definition.setup(ctx) as () => void
+  return {
+    timer,
+    subscribed: (type: string) => handlers.has(type),
+    emit: (type: string, data: Record<string, unknown>) => {
+      for (const handler of handlers.get(type) ?? []) handler({ data })
+    },
+    tick: () => timer.callback?.(),
+    cleanup,
+    restore: () => {
+      globalThis.setInterval = realSetInterval
+      globalThis.clearInterval = realClearInterval
+    },
+  }
+}
+
+describe("plugin setup", () => {
+  afterEach(() => {
+    const log = join(tmpdir(), `tps-debug-${process.pid}.log`)
+    if (existsSync(log)) rmSync(log)
+  })
+
+  test("subscribes to the events the tracker needs", () => {
+    const h = createHarness()
+    for (const type of [
+      "session.execution.started",
+      "session.text.delta",
+      "session.reasoning.delta",
+      "session.tool.input.delta",
+      "session.execution.succeeded",
+      "session.execution.failed",
+      "session.execution.interrupted",
+      "session.idle",
+      "session.deleted",
+    ]) {
+      expect(h.subscribed(type)).toBe(true)
+    }
+    h.cleanup()
+    h.restore()
+  })
+
+  test("runs no timer until a session streams, and stops once it is idle", () => {
+    const h = createHarness()
+    expect(h.timer.created).toBe(0)
+
+    h.emit("session.text.delta", { sessionID: "s", delta: "hello" })
+    expect(h.timer.created).toBe(1)
+    expect(h.timer.intervalMs).toBe(125) // 8 Hz default
+
+    h.tick() // still streaming: keeps ticking
+    expect(h.timer.cleared).toBe(0)
+
+    h.emit("session.idle", { sessionID: "s" })
+    h.tick() // publishes the frozen value, then stops
+    expect(h.timer.cleared).toBe(1)
+
+    // a later run starts a fresh timer
+    h.emit("session.text.delta", { sessionID: "s", delta: "again" })
+    expect(h.timer.created).toBe(2)
+    h.cleanup()
+    h.restore()
+  })
+
+  test("honours refreshHz", () => {
+    const h = createHarness({ refreshHz: 20 })
+    h.emit("session.text.delta", { sessionID: "s", delta: "hello" })
+    expect(h.timer.intervalMs).toBe(50)
+    h.cleanup()
+    h.restore()
+  })
+
+  test("cleanup stops the timer", () => {
+    const h = createHarness()
+    h.emit("session.text.delta", { sessionID: "s", delta: "hello" })
+    h.cleanup()
+    expect(h.timer.cleared).toBe(1)
+    h.restore()
+  })
+
+  test("writes nothing to disk without the debug option", () => {
+    delete process.env["TPS_DEBUG"]
+    const h = createHarness()
+    h.emit("session.execution.started", { sessionID: "s" })
+    h.emit("session.text.delta", { sessionID: "s", delta: "hello" })
+    h.emit("session.idle", { sessionID: "s" })
+    h.tick()
+    h.cleanup()
+    h.restore()
+    expect(existsSync(join(tmpdir(), `tps-debug-${process.pid}.log`))).toBe(false)
+  })
+})
+
+describe("resolveOptions", () => {
+  test("empty options yield the defaults", () => {
+    expect(resolveOptions({})).toEqual(DEFAULT_OPTIONS)
+  })
+
+  test("accepts valid values", () => {
+    const options = resolveOptions({ display: "tps", refreshHz: 20, gapCapMs: 1500, debug: true })
+    expect(options.display).toBe("tps")
+    expect(options.refreshHz).toBe(20)
+    expect(options.gapCapMs).toBe(1500)
+    expect(options.debug).toBe(true)
+  })
+
+  test("clamps numbers into their supported range", () => {
+    expect(resolveOptions({ refreshHz: 0 }).refreshHz).toBe(1)
+    expect(resolveOptions({ refreshHz: 1000 }).refreshHz).toBe(60)
+    expect(resolveOptions({ sampleWindowMs: 10 }).sampleWindowMs).toBe(1_000)
+    expect(resolveOptions({ gapCapMs: 1e9 }).gapCapMs).toBe(30_000)
+  })
+
+  test("rejects non-numeric and unknown values", () => {
+    const options = resolveOptions({ refreshHz: "12", sampleWindowMs: null, display: "fancy", debug: "yes" })
+    expect(options.refreshHz).toBe(DEFAULT_OPTIONS.refreshHz)
+    expect(options.sampleWindowMs).toBe(DEFAULT_OPTIONS.sampleWindowMs)
+    expect(options.display).toBe("both")
+    expect(options.debug).toBe(false)
+  })
+
+  test("never lets the single-sample ceiling fall below the floor", () => {
+    const options = resolveOptions({ singleSampleMinMs: 900, singleSampleMaxMs: 100 })
+    expect(options.singleSampleMinMs).toBe(900)
+    expect(options.singleSampleMaxMs).toBe(900)
+  })
+
+  test("tolerates hostile shapes", () => {
+    expect(resolveOptions({ display: {}, refreshHz: Number.NaN, gapCapMs: Number.POSITIVE_INFINITY })).toEqual(
+      DEFAULT_OPTIONS,
+    )
   })
 })
