@@ -8,18 +8,16 @@ The plugin always loads. An unknown key, or a value of the wrong type, falls bac
 |---|---|---|---|
 | `display` | `"both"` | `both` \| `tokens` \| `tps` | Which parts of the label to show. |
 | `refreshHz` | `8` | 1–60 | How often the label updates while a session streams. |
-| `sampleWindowMs` | `5000` | 1000–60000 | Length of the rolling window behind the live rate. |
-| `liveStaleMs` | `1500` | 250–30000 | How long output can stay silent before the label falls back to the run average. |
-| `gapCapMs` | `2000` | 100–30000 | Most that a single gap between two outputs can add to active time. |
-| `tailMaxMs` | `1000` | 0–10000 | Most that the time after the last output can add to active time. |
-| `singleSampleMinMs` | `250` | 50–5000 | Floor on the duration a rate is divided by. |
-| `singleSampleMaxMs` | `1000` | 50–10000 | Ceiling on that duration when the window holds a single sample. |
+| `bytesPerToken` | `4.75` | 1–16 | Bytes per token used to estimate tokens from output bytes, until a session calibrates its own ratio (see below). |
 | `debug` | `false` | — | Writes a debug log. |
 
-Two extra rules:
+One extra rule:
 
-- `singleSampleMaxMs` is never allowed below `singleSampleMinMs`. Set it lower and `singleSampleMinMs` wins.
 - `debug` only accepts `true`. Anything else leaves logging off.
+
+## Calibration
+
+The token count is an estimate: output bytes divided by `bytesPerToken`. When a model step completes, the host reports that step's real generated-token count. The plugin pairs it with output deltas carrying the same assistant-message ID and uses the first sufficiently large, plausible pair to calibrate a per-session ratio. Afterwards the estimate for that session uses its own measured ratio instead of `bytesPerToken`. If the step start was missed, the usage never arrives, or the implied ratio is implausible, that step is ignored and the configured fallback remains in use.
 
 ## Example
 

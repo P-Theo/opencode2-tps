@@ -16,7 +16,7 @@ When the run ends, the number freezes at the run average and stays there until t
 
 ## Install
 
-Built against the OpenCode 2 preview. The earliest known compatible beta is `0.0.0-beta-17595`; the latest tested beta is `0.0.0-beta-17595`. The TUI plugin API is still moving, so a much newer or older build may drop the indicator without an error: a renamed event stops arriving, and an unknown composer slot gets quietly rerouted. If the figure never appears, check your CLI version first.
+Built against the OpenCode 2 preview. The earliest known compatible beta is `0.0.0-beta-17595`; the latest tested beta is `0.0.0-beta-17639`. The TUI plugin API is still moving, so a much newer or older build may drop the indicator without an error: a renamed event stops arriving, and an unknown composer slot gets quietly rerouted. If the figure never appears, check your CLI version first.
 
 Add the package to `~/.config/opencode/cli.json`:
 
@@ -69,9 +69,9 @@ The defaults are usable as they are. For the full option list, the ranges and mo
 
 ## How it works
 
-The plugin counts the output bytes of a run and estimates tokens from the byte total. It also accumulates the run's active time, capping each gap between two outputs, so time spent in a tool call is not charged to the model's rate.
+The plugin counts the output bytes of a run and estimates tokens from the byte total. When the host reports the session's real token counts, the plugin measures its own bytes-per-token ratio for that session and switches to it — until then it assumes 4.75 bytes per token. TPS is the run's estimated tokens divided by active model-generation time: timing starts at each step's first output and continues without pause for provider stalls, while tool-execution intervals and time between model steps are excluded.
 
-The live figure comes from a rolling window over recent output. When that window holds nothing recent, the indicator falls back to the average of the run so far.
+The measured ratio depends on the model and is calibrated once per session. Changing models mid-session can therefore make the token and t/s estimates inaccurate; start a new session after switching models for a fresh calibration. This also avoids the prompt-cache disruption associated with changing models in existing sessions.
 
 For more detail, see [Architecture](docs/development.md#architecture).
 

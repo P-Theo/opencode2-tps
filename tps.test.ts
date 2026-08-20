@@ -3,6 +3,8 @@ import { existsSync, readdirSync, rmSync, statSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import definition, {
+  CALIBRATION_MIN_BYTES,
+  CALIBRATION_MIN_TOKENS,
   DEBUG_DIR_PREFIX,
   DEFAULT_OPTIONS,
   formatLabel,
@@ -12,47 +14,48 @@ import definition, {
   type TpsOptionsInput,
 } from "./tps.tsx"
 
-// 50 ASCII bytes -> ceil(50/5) = 10 estimated tokens
+// 50 ASCII bytes -> ceil(50/4.75) = 11 estimated tokens at the default ratio
 const DELTA = "a".repeat(50)
 
 describe("TpsTracker", () => {
-  test("accumulates estimated tokens and computes rolling tps", () => {
+  test("accumulates estimated tokens and computes run-average tps", () => {
     const tracker = new TpsTracker()
     tracker.beginRun("s")
     tracker.push("s", DELTA, 1000)
     tracker.push("s", DELTA, 1100)
     tracker.push("s", DELTA, 1200)
     const value = tracker.value("s", 1200)
-    // 30 tokens over gaps 100+100 clamped to >=250ms => 120 t/s
+    // run total 32 tokens over 200ms from the first delta
     expect(value).not.toBeNull()
-    expect(value?.tokens).toBe(30)
+    expect(value?.tokens).toBe(32)
     expect(value?.frozen).toBe(false)
-    expect(value?.tps).toBeCloseTo(120)
+    expect(value?.tps).toBeCloseTo(160)
   })
 
   test("derives tokens from the run's byte total, not per delta", () => {
     const tracker = new TpsTracker()
-    // ten 2-byte deltas = 20 bytes = 4 tokens (a per-delta floor would say 10)
+    // ten 2-byte deltas = 20 bytes = 5 tokens (a per-delta floor would say 10)
     for (let i = 0; i < 10; i += 1) tracker.push("s", "ab", 1000 + i * 10)
-    expect(tracker.value("s", 1090)?.tokens).toBe(4)
+    expect(tracker.value("s", 1090)?.tokens).toBe(5)
   })
 
   test("counts multi-byte characters by their utf-8 length", () => {
     const tracker = new TpsTracker()
-    tracker.push("s", "€".repeat(5), 1000) // 3 bytes each => 15 bytes => 3 tokens
-    expect(tracker.value("s", 1000)?.tokens).toBe(3)
+    tracker.push("s", "€".repeat(5), 1000) // 3 bytes each => 15 bytes => 4 tokens
+    expect(tracker.value("s", 1000)?.tokens).toBe(4)
   })
 
-  test("falls back to the run average when the live window goes stale", () => {
+  test("honours a custom bytes-per-token ratio", () => {
+    const tracker = new TpsTracker({ ...DEFAULT_OPTIONS, bytesPerToken: 5 })
+    tracker.push("s", DELTA, 1000) // 50 bytes / 5 = 10 tokens
+    expect(tracker.value("s", 1000)?.tokens).toBe(10)
+  })
+
+  test("a provider pause after output begins lowers tps", () => {
     const tracker = new TpsTracker()
     tracker.push("s", DELTA, 1000)
-    // inside the stale cutoff: a live single-sample rate
-    expect(tracker.value("s", 2000)?.tps).toBeCloseTo(10)
-    // past it the indicator keeps the run-so-far average instead of blanking
-    const stale = tracker.value("s", 2501)
-    expect(stale?.tokens).toBe(10)
-    expect(stale?.frozen).toBe(false)
-    expect(stale?.tps).toBeCloseTo(10) // 10 tokens / 1000ms capped tail
+    expect(tracker.value("s", 2000)?.tps).toBeCloseTo(11)
+    expect(tracker.value("s", 3000)?.tps).toBeCloseTo(5.5)
   })
 
   test("the running average is continuous with the frozen one", () => {
@@ -72,42 +75,71 @@ describe("TpsTracker", () => {
     expect(tracker.value("s", 1000)).toBeNull()
   })
 
-  test("drops samples older than the rolling window", () => {
+  test("does not cap long pauses within a model step", () => {
     const tracker = new TpsTracker()
     tracker.push("s", DELTA, 0)
     tracker.push("s", DELTA, 6000)
     const value = tracker.value("s", 6000)
-    // only the second sample is inside the 5s window: single sample, 10 tokens
-    expect(value?.tokens).toBe(20) // totals are cumulative for the run
-    expect(value?.tps).toBeCloseTo(40) // 10 tokens / 250ms floor
+    expect(value?.tokens).toBe(22)
+    expect(value?.tps).toBeCloseTo(22 / 6)
   })
 
-  test("caps gaps inside the live window so tool pauses do not drag it down", () => {
+  test("excludes time between model steps", () => {
     const tracker = new TpsTracker()
-    tracker.push("s", DELTA, 0)
-    tracker.push("s", DELTA, 3000) // 3s pause, both samples still in the window
-    // uncapped this would read 20/3s = 6.67; the gap counts as 2s at most
-    expect(tracker.value("s", 3000)?.tps).toBeCloseTo(10)
+    tracker.beginStep("s", "m1")
+    tracker.push("s", DELTA, 0, "m1")
+    tracker.push("s", DELTA, 100, "m1")
+    tracker.finishStep("s", "m1", undefined, 200)
+    tracker.beginStep("s", "m2")
+    tracker.push("s", DELTA, 10_000, "m2")
+    tracker.push("s", DELTA, 10_100, "m2")
+    // 200ms in step 1 + 100ms in step 2; the 9.8s tool interval is excluded.
+    expect(tracker.value("s", 10_100)?.tps).toBeCloseTo(43 / 0.3)
   })
 
-  test("caps inter-delta gaps so tool pauses do not inflate duration", () => {
+  test("counts a provider pause after the final delta until the step ends", () => {
     const tracker = new TpsTracker()
-    tracker.push("s", DELTA, 0)
-    tracker.push("s", DELTA, 10_000)
+    tracker.beginStep("s", "m1")
+    tracker.push("s", DELTA, 0, "m1")
+    tracker.finishStep("s", "m1", undefined, 3_000)
     tracker.finish("s", 10_000)
     const value = tracker.value("s", 10_000)
-    // activeMs = 0 (first sample) + 2000 (capped gap) + 0 tail => 20 tok / 2s
     expect(value?.frozen).toBe(true)
-    expect(value?.tokens).toBe(20)
-    expect(value?.tps).toBeCloseTo(10)
+    expect(value?.tokens).toBe(11)
+    expect(value?.tps).toBeCloseTo(11 / 3)
   })
 
-  test("honours a custom gap cap", () => {
-    const tracker = new TpsTracker({ ...DEFAULT_OPTIONS, gapCapMs: 500 })
-    tracker.push("s", DELTA, 0)
-    tracker.push("s", DELTA, 10_000)
-    tracker.finish("s", 10_000)
-    expect(tracker.value("s", 10_000)?.tps).toBeCloseTo(40) // 20 tok / 500ms
+  test("excludes tool execution inside a model step", () => {
+    const tracker = new TpsTracker()
+    tracker.beginStep("s", "m1")
+    tracker.push("s", DELTA, 0, "m1")
+    tracker.push("s", DELTA, 100, "m1")
+    tracker.beginTool("s", "m1", "tool1", 100)
+    tracker.finishTool("s", "m1", "tool1", 5_100)
+    tracker.finishStep("s", "m1", undefined, 5_200)
+    expect(tracker.value("s", 5_200)?.tps).toBeCloseTo(22 / 0.2)
+  })
+
+  test("excludes overlapping tool executions only once", () => {
+    const tracker = new TpsTracker()
+    tracker.beginStep("s", "m1")
+    tracker.push("s", DELTA, 0, "m1")
+    tracker.beginTool("s", "m1", "tool1", 100)
+    tracker.beginTool("s", "m1", "tool2", 200)
+    tracker.finishTool("s", "m1", "tool1", 1_000)
+    tracker.finishTool("s", "m1", "tool2", 2_000)
+    tracker.finishStep("s", "m1", undefined, 2_100)
+    expect(tracker.value("s", 2_100)?.tps).toBeCloseTo(11 / 0.2)
+  })
+
+  test("ignores tool events from another assistant message", () => {
+    const tracker = new TpsTracker()
+    tracker.beginStep("s", "m1")
+    tracker.push("s", DELTA, 0, "m1")
+    tracker.beginTool("s", "other", "tool1", 100)
+    tracker.finishTool("s", "other", "tool1", 2_000)
+    tracker.finishStep("s", "m1", undefined, 2_100)
+    expect(tracker.value("s", 2_100)?.tps).toBeCloseTo(11 / 2.1)
   })
 
   test("keeps the frozen average until the next run", () => {
@@ -117,7 +149,7 @@ describe("TpsTracker", () => {
     tracker.finish("s", 200)
     const frozen = tracker.value("s", 201)
     expect(frozen?.frozen).toBe(true)
-    expect(frozen?.tokens).toBe(20)
+    expect(frozen?.tokens).toBe(22)
     // still frozen long after finishing — no time-based expiry
     expect(tracker.value("s", 200 + 60_000)?.frozen).toBe(true)
     // next prompt starts a new run and clears the frozen average
@@ -167,20 +199,150 @@ describe("TpsTracker", () => {
     expect(tracker.hasRunning()).toBe(false)
   })
 
-  test("prune trims the window without touching run totals", () => {
-    const tracker = new TpsTracker()
-    tracker.push("s", DELTA, 0)
-    tracker.push("s", DELTA, 100)
-    tracker.prune(10_000)
-    const value = tracker.value("s", 10_000)
-    expect(value?.tokens).toBe(20)
-    expect(value?.tps).toBeCloseTo(20 / 1.1) // activeMs 100 + capped 1000ms tail
-  })
-
   test("ignores empty deltas", () => {
     const tracker = new TpsTracker()
     tracker.push("s", "", 1000)
     expect(tracker.value("s", 1000)).toBeNull()
+  })
+
+  describe("calibration from completed model steps", () => {
+    // 4000 bytes from one assistant step and 800 generated tokens: ratio 5,
+    // which must override the configured fallback from then on.
+    function seedCalibratedSession(bytes: number, tokens: number): TpsTracker {
+      const tracker = new TpsTracker()
+      tracker.beginStep("s", "m1")
+      tracker.push("s", "a".repeat(bytes), 0, "m1")
+      tracker.finishStep("s", "m1", tokens, 1)
+      return tracker
+    }
+
+    test("calibrates from the first usable completed step", () => {
+      const tracker = seedCalibratedSession(4_000, 800)
+      tracker.push("s", DELTA, 1000) // 50 more bytes at ratio 5 => 10 more tokens
+      tracker.finish("s", 1000)
+      expect(tracker.value("s", 1000)?.tokens).toBe(810)
+    })
+
+    test("ignores steps without enough bytes or tokens", () => {
+      const tracker = new TpsTracker()
+      tracker.beginStep("s", "m1")
+      tracker.push("s", "a".repeat(CALIBRATION_MIN_BYTES), 0, "m1")
+      tracker.finishStep("s", "m1", CALIBRATION_MIN_TOKENS - 1, 1)
+      tracker.push("s", DELTA, 1000)
+      tracker.finish("s", 1000)
+      // whole run at the fallback ratio 4.75: ceil((2048 + 50) / 4.75)
+      expect(tracker.value("s", 1000)?.tokens).toBe(442)
+    })
+
+    test("keeps the fallback ratio when no step usage arrives", () => {
+      const tracker = new TpsTracker()
+      tracker.push("s", DELTA, 1000)
+      tracker.finish("s", 1000)
+      expect(tracker.value("s", 1000)?.tokens).toBe(11)
+    })
+
+    test("rejects an implausible ratio and keeps the fallback", () => {
+      // 4000 bytes but only 100 tokens => ratio 40, outside the 1-16 bounds
+      const tracker = seedCalibratedSession(4_000, 100)
+      tracker.push("s", DELTA, 1000)
+      tracker.finish("s", 1000)
+      // whole run at the fallback ratio 4.75: ceil((4000 + 50) / 4.75)
+      expect(tracker.value("s", 1000)?.tokens).toBe(853)
+      // ... and the rejected step does not consume the one chance: the next
+      // usable step calibrates.
+      tracker.beginRun("s")
+      tracker.beginStep("s", "m2")
+      tracker.push("s", "a".repeat(CALIBRATION_MIN_BYTES), 2000, "m2")
+      tracker.finishStep("s", "m2", 512, 2500) // ratio 4
+      tracker.finish("s", 3000)
+      expect(tracker.value("s", 3000)?.tokens).toBe(512)
+    })
+
+    test("calibrates once per session, ignoring later steps", () => {
+      const tracker = seedCalibratedSession(4_000, 800) // ratio 5
+      tracker.beginStep("s", "m2")
+      tracker.push("s", DELTA, 1000)
+      tracker.finishStep("s", "m2", 10_000, 1000)
+      tracker.finish("s", 1000)
+      expect(tracker.value("s", 1000)?.tokens).toBe(810) // still ratio 5
+    })
+
+    test("calibration is per session, not global", () => {
+      const tracker = seedCalibratedSession(4_000, 800) // "s" calibrates to 5
+      tracker.push("other", DELTA, 1000)
+      tracker.finish("other", 1000)
+      expect(tracker.value("other", 1000)?.tokens).toBe(11) // "other" keeps fallback ratio
+    })
+
+    test("eviction forgets the calibration", () => {
+      const tracker = seedCalibratedSession(4_000, 800)
+      tracker.evict("s")
+      tracker.push("s", DELTA, 1000)
+      tracker.finish("s", 1000)
+      expect(tracker.value("s", 1000)?.tokens).toBe(11) // back to fallback
+    })
+
+    test("does not mix deltas from another assistant message into the sample", () => {
+      const tracker = new TpsTracker()
+      tracker.beginStep("s", "m1")
+      tracker.push("s", "x".repeat(4_000), 0, "other")
+      tracker.push("s", "a".repeat(4_000), 1, "m1")
+      tracker.finishStep("s", "m1", 800, 2)
+      tracker.finish("s", 2)
+      expect(tracker.value("s", 2)?.tokens).toBe(1_600) // all 8000 run bytes at ratio 5
+    })
+
+    test("does not calibrate when the matching step start was missed", () => {
+      const tracker = new TpsTracker()
+      tracker.push("s", "a".repeat(4_000), 0, "m1")
+      tracker.finishStep("s", "m1", 800, 1)
+      tracker.finish("s", 1)
+      expect(tracker.value("s", 1)?.tokens).toBe(843)
+    })
+
+    test("failed steps calibrate only when usage is available", () => {
+      const tracker = new TpsTracker()
+      tracker.beginStep("s", "m1")
+      tracker.push("s", "a".repeat(4_000), 0, "m1")
+      tracker.finishStep("s", "m1", undefined, 1)
+      tracker.beginStep("s", "m2")
+      tracker.push("s", "a".repeat(4_000), 1, "m2")
+      tracker.finishStep("s", "m2", 800, 2)
+      tracker.finish("s", 2)
+      expect(tracker.value("s", 2)?.tokens).toBe(1_600)
+    })
+
+    test("ignores non-finite and negative usage", () => {
+      for (const tokens of [Number.NaN, Number.POSITIVE_INFINITY, -1]) {
+        const tracker = new TpsTracker()
+        tracker.beginStep("s", "m1")
+        tracker.push("s", "a".repeat(4_000), 0, "m1")
+        tracker.finishStep("s", "m1", tokens, 1)
+        tracker.finish("s", 1)
+        expect(tracker.value("s", 1)?.tokens).toBe(843)
+      }
+    })
+
+    test("cap eviction forgets the calibration", () => {
+      const tracker = seedCalibratedSession(4_000, 800)
+      tracker.finish("s", 1)
+      for (let i = 0; i < 64; i += 1) {
+        tracker.push(`other${i}`, DELTA, i + 2)
+        tracker.finish(`other${i}`, i + 3)
+      }
+      tracker.push("s", DELTA, 1000)
+      tracker.finish("s", 1001)
+      expect(tracker.value("s", 1001)?.tokens).toBe(11)
+    })
+
+    test("an empty run preserves calibration until bounded eviction", () => {
+      const tracker = seedCalibratedSession(4_000, 800)
+      tracker.beginRun("s")
+      tracker.finish("s", 1)
+      tracker.push("s", DELTA, 2)
+      tracker.finish("s", 3)
+      expect(tracker.value("s", 3)?.tokens).toBe(10)
+    })
   })
 
   test("caps how many finished runs it remembers, keeping the recent ones", () => {
@@ -204,6 +366,14 @@ describe("TpsTracker", () => {
     }
     expect(tracker.value("live", 1000)?.frozen).toBe(false)
     expect(tracker.hasRunning()).toBe(true)
+  })
+
+  test("re-applies the session cap when an oversized running set finishes", () => {
+    const tracker = new TpsTracker()
+    for (let i = 0; i < 65; i += 1) tracker.push(`s${i}`, DELTA, i)
+    expect(tracker.value("s0", 100)).not.toBeNull()
+    tracker.finish("s0", 100)
+    expect(tracker.value("s0", 100)).toBeNull()
   })
 })
 
@@ -229,7 +399,10 @@ describe("formatLabel", () => {
 interface FakeEvent {
   readonly data: {
     readonly sessionID?: string
+    readonly assistantMessageID?: string
+    readonly id?: string
     readonly delta?: string
+    readonly tokens?: { readonly output: number; readonly reasoning: number }
   }
 }
 
@@ -357,6 +530,12 @@ describe("plugin setup", () => {
       "session.text.delta",
       "session.reasoning.delta",
       "session.tool.input.delta",
+      "session.step.started",
+      "session.step.ended",
+      "session.step.failed",
+      "session.tool.called",
+      "session.tool.success",
+      "session.tool.failed",
       "session.execution.succeeded",
       "session.execution.failed",
       "session.execution.interrupted",
@@ -369,23 +548,28 @@ describe("plugin setup", () => {
     h.restore()
   })
 
-  test("runs no timer until a session streams, and stops once it is idle", () => {
+  test("runs the timer only while a model step is producing output", () => {
     const h = createHarness()
     expect(h.timer.created).toBe(0)
 
-    h.emit("session.text.delta", { sessionID: "s", delta: "hello" })
+    h.emit("session.step.started", { sessionID: "s", assistantMessageID: "m1" })
+    h.emit("session.text.delta", { sessionID: "s", assistantMessageID: "m1", delta: "hello" })
     expect(h.timer.created).toBe(1)
     expect(h.timer.intervalMs).toBe(125) // 8 Hz default
 
     h.tick() // still streaming: keeps ticking
     expect(h.timer.cleared).toBe(0)
 
-    h.emit("session.idle", { sessionID: "s" })
-    h.tick() // publishes the frozen value, then stops
+    h.emit("session.step.ended", {
+      sessionID: "s",
+      assistantMessageID: "m1",
+      tokens: { output: 1, reasoning: 0 },
+    })
+    h.tick() // publishes the step average, then stops during tool execution
     expect(h.timer.cleared).toBe(1)
 
-    // a later run starts a fresh timer
-    h.emit("session.text.delta", { sessionID: "s", delta: "again" })
+    h.emit("session.step.started", { sessionID: "s", assistantMessageID: "m2" })
+    h.emit("session.text.delta", { sessionID: "s", assistantMessageID: "m2", delta: "again" })
     expect(h.timer.created).toBe(2)
     h.cleanup()
     h.restore()
@@ -410,11 +594,17 @@ describe("plugin setup", () => {
   // Ordered before the negative test: `afterEach` removes the directory, and the
   // module keeps its resolved path, so re-enabling debug afterwards would write
   // into a directory that no longer exists.
-  test("debug logs into a private directory, not a guessable temp path", () => {
+  test("debug logs into a private directory, not a guessable temp path", async () => {
     delete process.env["TPS_DEBUG"]
     const h = createHarness({ debug: true })
     h.emit("session.execution.started", { sessionID: "s" })
-    h.emit("session.text.delta", { sessionID: "s", delta: "hello" })
+    h.emit("session.step.started", { sessionID: "s", assistantMessageID: "m1" })
+    h.emit("session.text.delta", { sessionID: "s", assistantMessageID: "m1", delta: "a".repeat(4_000) })
+    h.emit("session.step.ended", {
+      sessionID: "s",
+      assistantMessageID: "m1",
+      tokens: { output: 700, reasoning: 100 },
+    })
     h.emit("session.idle", { sessionID: "s" })
     h.tick()
     h.cleanup()
@@ -426,6 +616,9 @@ describe("plugin setup", () => {
     // even be able to list it.
     expect(statSync(dir).mode & 0o777).toBe(0o700)
     expect(existsSync(join(dir, "tps.log"))).toBe(true)
+    const log = Bun.file(join(dir, "tps.log"))
+    expect(log.size).toBeGreaterThan(0)
+    expect(await log.text()).toContain("calibrated sid=s bytes=4000 tokens=800 ratio=5.00")
     // The old predictable path must stay unused.
     expect(existsSync(join(tmpdir(), `tps-debug-${process.pid}.log`))).toBe(false)
   })
@@ -458,36 +651,30 @@ describe("resolveOptions", () => {
   })
 
   test("accepts valid values", () => {
-    const options = resolveOptions({ display: "tps", refreshHz: 20, gapCapMs: 1500, debug: true })
+    const options = resolveOptions({ display: "tps", refreshHz: 20, bytesPerToken: 5, debug: true })
     expect(options.display).toBe("tps")
     expect(options.refreshHz).toBe(20)
-    expect(options.gapCapMs).toBe(1500)
+    expect(options.bytesPerToken).toBe(5)
     expect(options.debug).toBe(true)
   })
 
   test("clamps numbers into their supported range", () => {
     expect(resolveOptions({ refreshHz: 0 }).refreshHz).toBe(1)
     expect(resolveOptions({ refreshHz: 1000 }).refreshHz).toBe(60)
-    expect(resolveOptions({ sampleWindowMs: 10 }).sampleWindowMs).toBe(1_000)
-    expect(resolveOptions({ gapCapMs: 1e9 }).gapCapMs).toBe(30_000)
+    expect(resolveOptions({ bytesPerToken: 0 }).bytesPerToken).toBe(1)
+    expect(resolveOptions({ bytesPerToken: 100 }).bytesPerToken).toBe(16)
   })
 
-  test("rejects non-numeric and unknown values", () => {
-    const options = resolveOptions({ refreshHz: "12", sampleWindowMs: null, display: "fancy", debug: "yes" })
+  test("rejects invalid values", () => {
+    const options = resolveOptions({ refreshHz: "12", bytesPerToken: null, display: "fancy", debug: "yes" })
     expect(options.refreshHz).toBe(DEFAULT_OPTIONS.refreshHz)
-    expect(options.sampleWindowMs).toBe(DEFAULT_OPTIONS.sampleWindowMs)
+    expect(options.bytesPerToken).toBe(DEFAULT_OPTIONS.bytesPerToken)
     expect(options.display).toBe("both")
     expect(options.debug).toBe(false)
   })
 
-  test("never lets the single-sample ceiling fall below the floor", () => {
-    const options = resolveOptions({ singleSampleMinMs: 900, singleSampleMaxMs: 100 })
-    expect(options.singleSampleMinMs).toBe(900)
-    expect(options.singleSampleMaxMs).toBe(900)
-  })
-
   test("tolerates hostile shapes", () => {
-    expect(resolveOptions({ display: {}, refreshHz: Number.NaN, gapCapMs: Number.POSITIVE_INFINITY })).toEqual(
+    expect(resolveOptions({ display: {}, refreshHz: Number.NaN, bytesPerToken: Number.POSITIVE_INFINITY })).toEqual(
       DEFAULT_OPTIONS,
     )
   })
