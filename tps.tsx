@@ -70,7 +70,10 @@ export function isEnvEnabled(value: string | undefined): boolean {
 function mark(line: string): void {
   if (!debugState.enabled) return
   try {
-    appendFileSync(debugState.file, `${new Date().toISOString()} ${line}\n`)
+    const safeLine = line.replace(/\p{Cc}/gu, (character) =>
+      `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
+    )
+    appendFileSync(debugState.file, `${new Date().toISOString()} ${safeLine}\n`)
   } catch {
     // debug only; never break the host
   }
@@ -80,7 +83,7 @@ function mark(line: string): void {
 // tuning
 
 export interface TpsConfig {
-  readonly bytesPerToken: number // fallback ratio until a session calibrates its own
+  readonly bytesPerToken: number // live and partial-output estimate only
 }
 
 export const DEFAULT_CONFIG: TpsConfig = {
@@ -88,15 +91,11 @@ export const DEFAULT_CONFIG: TpsConfig = {
 }
 // The frozen final average stays visible until the next prompt starts a new run.
 
-// Step completion events carry the generated-token count for that model call.
-// Pairing it with deltas from the same assistant message avoids contamination
-// from concurrent title generation and other session-level usage updates.
-export const CALIBRATION_MIN_BYTES = 2_048
-export const CALIBRATION_MIN_TOKENS = 50
-// Bounds shared by the option clamp and the calibration sanity check: a ratio
-// outside them means the report does not describe the bytes the plugin watched.
 const BYTES_PER_TOKEN_MIN = 1
 const BYTES_PER_TOKEN_MAX = 16
+const LIVE_WINDOW_MS = 5_000
+const LIVE_STALE_MS = 1_500
+const LIVE_MIN_DURATION_MS = 250
 
 function estimateTokens(bytes: number, bytesPerToken: number): number {
   return Math.ceil(bytes / bytesPerToken)
@@ -112,31 +111,49 @@ function formatTps(value: number): string {
 // tracker (UI-free)
 
 interface Frozen {
-  readonly tps: number
+  readonly tps: number | null
   readonly tokens: number
+  readonly tokensEstimated: boolean
+  readonly partial: boolean
+}
+
+interface LiveSample {
+  readonly bytes: number
+  readonly timestamp: number
+}
+
+interface OutputBlock {
+  streamedBytes: number
+  finalBytes: number | null
+}
+
+interface StepState {
+  readonly assistantMessageID: string
+  readonly startedAt: number
+  lastBoundaryAt: number | null
+  observableBytes: number
+  readonly blocks: Map<string, OutputBlock>
+  readonly samples: LiveSample[]
 }
 
 interface RunState {
   phase: "running" | "ended"
-  bytes: number // raw output bytes this run (tokens are derived from the total)
-  activeMs: number // time from first output to completion within model steps
-  activeAssistantMessageID: string | null
-  lastSampleAt: number | null
-  activeTools: Set<string>
-  toolPauseStartedAt: number | null
-  toolPausedMs: number
+  settledTokens: number
+  settledDurationMs: number
+  tokensEstimated: boolean
+  partial: boolean
+  activeStep: StepState | null
+  readonly settledSteps: Set<string>
   frozen: Frozen | null
 }
 
-interface CalibrationStep {
-  readonly assistantMessageID: string
-  bytes: number
-}
-
 export interface TpsValue {
-  readonly tps: number
+  readonly tps: number | null
   readonly tokens: number
   readonly frozen: boolean
+  readonly tokensEstimated: boolean
+  readonly tpsEstimated: true
+  readonly partial: boolean
 }
 
 // A finished run keeps its frozen average indefinitely (it is what the composer
@@ -150,10 +167,6 @@ export class TpsTracker {
   // Insertion order is kept equal to run-start recency (see beginRun), which is
   // what makes eviction from the front drop the stalest session.
   private readonly runs = new Map<string, RunState>()
-  // Calibrated bytes/token and the currently observed model step. Both share
-  // the bounded lifecycle of `runs`.
-  private readonly ratios = new Map<string, number>()
-  private readonly calibrationSteps = new Map<string, CalibrationStep>()
   private readonly config: TpsConfig
 
   constructor(config: TpsConfig = DEFAULT_CONFIG) {
@@ -165,13 +178,12 @@ export class TpsTracker {
     if (!st) {
       st = {
         phase: "ended",
-        bytes: 0,
-        activeMs: 0,
-        activeAssistantMessageID: null,
-        lastSampleAt: null,
-        activeTools: new Set(),
-        toolPauseStartedAt: null,
-        toolPausedMs: 0,
+        settledTokens: 0,
+        settledDurationMs: 0,
+        tokensEstimated: false,
+        partial: false,
+        activeStep: null,
+        settledSteps: new Set(),
         frozen: null,
       }
       this.runs.set(sessionID, st)
@@ -181,15 +193,13 @@ export class TpsTracker {
 
   beginRun(sessionID: string): void {
     const st = this.state(sessionID)
-    this.calibrationSteps.delete(sessionID)
     st.phase = "running"
-    st.bytes = 0
-    st.activeMs = 0
-    st.activeAssistantMessageID = null
-    st.lastSampleAt = null
-    st.activeTools.clear()
-    st.toolPauseStartedAt = null
-    st.toolPausedMs = 0
+    st.settledTokens = 0
+    st.settledDurationMs = 0
+    st.tokensEstimated = false
+    st.partial = false
+    st.activeStep = null
+    st.settledSteps.clear()
     st.frozen = null
     // Re-insert so this session becomes the newest in iteration order. Every
     // entry is created through here, so the cap is checked on the one path that
@@ -208,156 +218,176 @@ export class TpsTracker {
     }
   }
 
-  private advanceTiming(st: RunState, now: number): void {
-    if (st.lastSampleAt === null) return
-    const currentPause = st.toolPauseStartedAt === null ? 0 : Math.max(0, now - st.toolPauseStartedAt)
-    st.activeMs += Math.max(0, now - st.lastSampleAt - st.toolPausedMs - currentPause)
-    st.lastSampleAt = now
-    st.toolPausedMs = 0
-    if (st.toolPauseStartedAt !== null) st.toolPauseStartedAt = now
-  }
-
-  push(sessionID: string, delta: string, now: number, assistantMessageID?: string): void {
-    if (!delta) return
+  private ensureStep(sessionID: string, assistantMessageID: string, now: number, replace = false): StepState | null {
     const st = this.state(sessionID)
-    if (st.phase !== "running") this.beginRun(sessionID) // execution.started missed
-    st.frozen = null
-    // Bytes accumulate; tokens are derived from the run total, so providers
-    // that emit 1-3 byte deltas are not rounded up on every single one.
+    if (st.settledSteps.has(assistantMessageID) || (st.phase === "ended" && st.frozen !== null)) return null
+    if (st.phase !== "running") this.beginRun(sessionID)
+    const running = this.state(sessionID)
+    if (running.activeStep?.assistantMessageID === assistantMessageID) return running.activeStep
+    if (running.activeStep && !replace) return null
+    if (running.activeStep) this.settleActiveStep(running, undefined)
+    const step: StepState = {
+      assistantMessageID,
+      startedAt: now,
+      lastBoundaryAt: null,
+      observableBytes: 0,
+      blocks: new Map(),
+      samples: [],
+    }
+    running.activeStep = step
+    running.frozen = null
+    return step
+  }
+
+  beginStep(sessionID: string, assistantMessageID: string, now = Date.now()): void {
+    const st = this.state(sessionID)
+    if (st.phase !== "running") {
+      if (st.settledSteps.has(assistantMessageID)) return
+      this.beginRun(sessionID)
+    }
+    if (st.activeStep?.assistantMessageID === assistantMessageID) return
+    this.ensureStep(sessionID, assistantMessageID, now, true)
+  }
+
+  beginBlock(sessionID: string, assistantMessageID: string, blockID: string, now: number): void {
+    const step = this.ensureStep(sessionID, assistantMessageID, now)
+    if (!step) return
+    if (!step.blocks.has(blockID)) step.blocks.set(blockID, { streamedBytes: 0, finalBytes: null })
+  }
+
+  push(
+    sessionID: string,
+    delta: string,
+    now: number,
+    assistantMessageID = "implicit",
+    blockID = "implicit",
+  ): void {
+    if (!delta) return
+    const step = this.ensureStep(sessionID, assistantMessageID, now)
+    if (!step) return
+    let block = step.blocks.get(blockID)
+    if (!block) {
+      block = { streamedBytes: 0, finalBytes: null }
+      step.blocks.set(blockID, block)
+    }
+    if (block.finalBytes !== null) return
     const bytes = Buffer.byteLength(delta, "utf8")
-    st.bytes += bytes
-    const calibration = this.calibrationSteps.get(sessionID)
-    if (calibration && calibration.assistantMessageID === assistantMessageID) calibration.bytes += bytes
-    const stepID = assistantMessageID ?? ""
-    if (st.activeAssistantMessageID !== stepID) {
-      st.activeAssistantMessageID = stepID
-      st.lastSampleAt = null
-      st.activeTools.clear()
-      st.toolPauseStartedAt = null
-      st.toolPausedMs = 0
-    }
-    if (st.lastSampleAt === null) {
-      st.lastSampleAt = now
-      if (st.activeTools.size > 0) st.toolPauseStartedAt = now
-    } else {
-      this.advanceTiming(st, now)
-    }
+    block.streamedBytes += bytes
+    step.observableBytes += bytes
+    step.samples.push({ bytes, timestamp: now })
+    const oldest = now - LIVE_WINDOW_MS
+    while (step.samples[0] && step.samples[0].timestamp < oldest) step.samples.shift()
   }
 
-  /** Start observing one model step for a possible one-shot calibration. */
-  beginStep(sessionID: string, assistantMessageID: string): void {
+  finishBlock(
+    sessionID: string,
+    assistantMessageID: string,
+    blockID: string,
+    text: string,
+    now: number,
+  ): void {
     const st = this.runs.get(sessionID)
-    if (!st || st.phase !== "running") this.beginRun(sessionID)
-    const running = this.runs.get(sessionID)
-    if (running) {
-      running.activeAssistantMessageID = assistantMessageID
-      running.lastSampleAt = null
-      running.activeTools.clear()
-      running.toolPauseStartedAt = null
-      running.toolPausedMs = 0
+    const step = st?.activeStep
+    if (!step || step.assistantMessageID !== assistantMessageID) return
+    let block = step.blocks.get(blockID)
+    if (!block) {
+      block = { streamedBytes: 0, finalBytes: null }
+      step.blocks.set(blockID, block)
     }
-    if (this.ratios.has(sessionID)) return
-    this.calibrationSteps.set(sessionID, { assistantMessageID, bytes: 0 })
+    if (block.finalBytes !== null) return
+    block.finalBytes = Buffer.byteLength(text, "utf8")
+    step.observableBytes += block.finalBytes - block.streamedBytes
+    step.lastBoundaryAt = Math.max(step.lastBoundaryAt ?? now, now)
   }
 
-  /** Pair a completed step's usage with deltas from that assistant message. */
-  finishStep(sessionID: string, assistantMessageID: string, generatedTokens: number | undefined, now: number): void {
-    const st = this.runs.get(sessionID)
-    if (st?.activeAssistantMessageID === assistantMessageID) {
-      this.advanceTiming(st, now)
-      st.activeAssistantMessageID = null
-      st.lastSampleAt = null
-      st.activeTools.clear()
-      st.toolPauseStartedAt = null
-      st.toolPausedMs = 0
+  private settleActiveStep(st: RunState, generatedTokens: number | undefined): void {
+    const step = st.activeStep
+    if (!step) return
+    const exact = generatedTokens !== undefined && Number.isFinite(generatedTokens) && generatedTokens >= 0
+    st.settledTokens += exact ? generatedTokens : estimateTokens(step.observableBytes, this.config.bytesPerToken)
+    if (!exact) {
+      st.tokensEstimated = true
+      st.partial = true
     }
-    const calibration = this.calibrationSteps.get(sessionID)
-    if (!calibration || calibration.assistantMessageID !== assistantMessageID) return
-    this.calibrationSteps.delete(sessionID)
-    if (this.ratios.has(sessionID)) return
-    if (generatedTokens === undefined || !Number.isFinite(generatedTokens) || generatedTokens < CALIBRATION_MIN_TOKENS)
-      return
-    const bytes = calibration.bytes
-    if (bytes < CALIBRATION_MIN_BYTES) return
-    const ratio = bytes / generatedTokens
-    if (ratio < BYTES_PER_TOKEN_MIN || ratio > BYTES_PER_TOKEN_MAX) {
-      mark(`calibration rejected sid=${sessionID} bytes=${bytes} tokens=${generatedTokens} ratio=${ratio.toFixed(2)}`)
-      return
-    }
-    this.ratios.set(sessionID, ratio)
-    mark(`calibrated sid=${sessionID} bytes=${bytes} tokens=${generatedTokens} ratio=${ratio.toFixed(2)}`)
+    if (step.lastBoundaryAt !== null) st.settledDurationMs += Math.max(0, step.lastBoundaryAt - step.startedAt)
+    st.settledSteps.add(step.assistantMessageID)
+    st.activeStep = null
   }
 
-  beginTool(sessionID: string, assistantMessageID: string, toolID: string, now: number): void {
+  finishStep(sessionID: string, assistantMessageID: string, generatedTokens: number | undefined, _now: number): void {
     const st = this.runs.get(sessionID)
-    if (!st || st.activeAssistantMessageID !== assistantMessageID || st.activeTools.has(toolID)) return
-    if (st.activeTools.size === 0 && st.lastSampleAt !== null) st.toolPauseStartedAt = now
-    st.activeTools.add(toolID)
+    if (st?.activeStep?.assistantMessageID !== assistantMessageID) return
+    this.settleActiveStep(st, generatedTokens)
   }
 
-  finishTool(sessionID: string, assistantMessageID: string, toolID: string, now: number): void {
-    const st = this.runs.get(sessionID)
-    if (st?.activeAssistantMessageID !== assistantMessageID || !st.activeTools.delete(toolID) || st.activeTools.size > 0)
-      return
-    if (st.toolPauseStartedAt !== null) st.toolPausedMs += Math.max(0, now - st.toolPauseStartedAt)
-    st.toolPauseStartedAt = null
-  }
-
-  /** The session's calibrated ratio, or the configured fallback. */
-  private ratioFor(sessionID: string): number {
-    return this.ratios.get(sessionID) ?? this.config.bytesPerToken
-  }
-
-  finish(sessionID: string, now: number): void {
+  finish(sessionID: string, _now: number): void {
     const st = this.runs.get(sessionID)
     if (!st || st.phase === "ended") return
-    this.calibrationSteps.delete(sessionID)
+    if (st.activeStep) this.settleActiveStep(st, undefined)
     st.phase = "ended"
-    this.advanceTiming(st, now)
-    st.lastSampleAt = null
-    st.activeAssistantMessageID = null
-    st.activeTools.clear()
-    st.toolPauseStartedAt = null
-    st.toolPausedMs = 0
-    const tokens = estimateTokens(st.bytes, this.ratioFor(sessionID))
+    const tokens = st.settledTokens
     if (tokens <= 0) {
       this.evictStale()
       return
     }
-    const seconds = Math.max(st.activeMs, 1) / 1000
-    st.frozen = { tps: tokens / seconds, tokens }
-    mark(`finish sid=${sessionID} tokens=${tokens} activeMs=${st.activeMs} tps=${st.frozen.tps.toFixed(1)}`)
+    const tps = st.settledDurationMs > 0 ? tokens / (st.settledDurationMs / 1000) : null
+    st.frozen = { tps, tokens, tokensEstimated: st.tokensEstimated, partial: st.partial }
+    mark(`finish sid=${sessionID} tokens=${tokens} observedMs=${st.settledDurationMs} tps=${tps?.toFixed(1) ?? "n/a"}`)
     this.evictStale()
   }
 
   private dropSession(sessionID: string): void {
     this.runs.delete(sessionID)
-    this.ratios.delete(sessionID)
-    this.calibrationSteps.delete(sessionID)
   }
 
   evict(sessionID: string): void {
     this.dropSession(sessionID)
   }
 
-  hasRunning(): boolean {
+  hasRunning(now = Date.now()): boolean {
     for (const st of this.runs.values()) {
-      if (st.phase === "running" && st.activeAssistantMessageID !== null && st.lastSampleAt !== null) return true
+      const last = st.activeStep?.samples.at(-1)
+      if (st.phase === "running" && last && now < last.timestamp + LIVE_STALE_MS) return true
     }
     return false
+  }
+
+  private liveTps(step: StepState, now: number): number | null {
+    const last = step.samples.at(-1)
+    if (!last) return null
+    const effectiveNow = Math.min(now, last.timestamp + LIVE_STALE_MS)
+    const oldest = effectiveNow - LIVE_WINDOW_MS
+    const samples = step.samples.filter((sample) => sample.timestamp >= oldest)
+    const first = samples[0]
+    if (!first) return null
+    const bytes = samples.reduce((total, sample) => total + sample.bytes, 0)
+    const durationMs = Math.max(effectiveNow - first.timestamp, LIVE_MIN_DURATION_MS)
+    return estimateTokens(bytes, this.config.bytesPerToken) / (durationMs / 1000)
   }
 
   value(sessionID: string, now: number): TpsValue | null {
     const st = this.runs.get(sessionID)
     if (!st) return null
-    if (st.frozen) return { tps: st.frozen.tps, tokens: st.frozen.tokens, frozen: true }
+    if (st.frozen)
+      return {
+        ...st.frozen,
+        frozen: true,
+        tpsEstimated: true,
+      }
     if (st.phase !== "running") return null
-    const tokens = estimateTokens(st.bytes, this.ratioFor(sessionID))
+    const active = st.activeStep
+    const activeTokens = active ? estimateTokens(active.observableBytes, this.config.bytesPerToken) : 0
+    const tokens = st.settledTokens + activeTokens
     if (tokens <= 0) return null
-    const currentPause = st.toolPauseStartedAt === null ? 0 : Math.max(0, now - st.toolPauseStartedAt)
-    const activeTail = st.lastSampleAt === null ? 0 : Math.max(0, now - st.lastSampleAt - st.toolPausedMs - currentPause)
-    const seconds = Math.max(st.activeMs + activeTail, 1) / 1000
-    return { tps: tokens / seconds, tokens, frozen: false }
+    const settledTps = st.settledDurationMs > 0 ? st.settledTokens / (st.settledDurationMs / 1000) : null
+    return {
+      tps: active ? (this.liveTps(active, now) ?? settledTps) : settledTps,
+      tokens,
+      frozen: false,
+      tokensEstimated: st.tokensEstimated || active !== null,
+      tpsEstimated: true,
+      partial: st.partial,
+    }
   }
 }
 
@@ -421,9 +451,11 @@ export function resolveOptions(raw: TpsOptionsInput): TpsOptions {
 }
 
 export function formatLabel(value: TpsValue, display: DisplayMode): string {
-  if (display === "tokens") return `${value.tokens} tok`
-  if (display === "tps") return `${formatTps(value.tps)} t/s`
-  return `${value.tokens} tok · ${formatTps(value.tps)} t/s`
+  const tokens = `${value.tokensEstimated ? "~" : ""}${value.tokens} tok`
+  const tps = value.tps === null ? null : `~${formatTps(value.tps)} t/s`
+  if (display === "tokens") return tokens
+  if (display === "tps") return tps ?? "— t/s"
+  return tps === null ? tokens : `${tokens} · ${tps}`
 }
 
 // ---------------------------------------------------------------------------
@@ -437,13 +469,21 @@ type AnyEvent = Parameters<Parameters<PluginContext["data"]["listen"]>[0]>[0]["d
 type EventOf<Type extends AnyEvent["type"]> = Extract<AnyEvent, { type: Type }>
 
 type DeltaEvent = EventOf<"session.text.delta" | "session.reasoning.delta" | "session.tool.input.delta">
+type BlockStartedEvent = EventOf<
+  "session.text.started" | "session.reasoning.started" | "session.tool.input.started"
+>
+type BlockEndedEvent = EventOf<"session.text.ended" | "session.reasoning.ended" | "session.tool.input.ended">
 type FinishEvent = EventOf<
   "session.execution.succeeded" | "session.execution.failed" | "session.execution.interrupted" | "session.idle"
 >
 type StepStartedEvent = EventOf<"session.step.started">
 type StepFinishedEvent = EventOf<"session.step.ended" | "session.step.failed">
-type ToolStartedEvent = EventOf<"session.tool.called">
-type ToolFinishedEvent = EventOf<"session.tool.success" | "session.tool.failed">
+
+function blockID(e: DeltaEvent | BlockStartedEvent | BlockEndedEvent): string {
+  if (e.type === "session.tool.input.delta" || e.type === "session.tool.input.started" || e.type === "session.tool.input.ended")
+    return `tool:${e.data.id}`
+  return `${e.type.startsWith("session.text.") ? "text" : "reasoning"}:${e.data.ordinal}`
+}
 
 const definition: Plugin.Definition = {
   id: "opencode2.tps",
@@ -464,6 +504,17 @@ const definition: Plugin.Definition = {
 
     const tracker = new TpsTracker(options)
     const [version, setVersion] = createSignal(0)
+    const seenEventIDs = new Set<string>()
+
+    const isNewEvent = (e: AnyEvent): boolean => {
+      if (seenEventIDs.has(e.id)) return false
+      seenEventIDs.add(e.id)
+      if (seenEventIDs.size > 4_096) {
+        const oldest = seenEventIDs.values().next().value
+        if (oldest !== undefined) seenEventIDs.delete(oldest)
+      }
+      return true
+    }
 
     mark(`setup ok app=${ctx.app.version} gen=${mine} display=${options.display} refreshHz=${options.refreshHz}`)
 
@@ -480,9 +531,9 @@ const definition: Plugin.Definition = {
         stopTimer()
         return
       }
-      const running = tracker.hasRunning()
-      // While a model step is running, elapsed generation time changes even
-      // without new deltas, so republish every tick to expose provider stalls.
+      const running = tracker.hasRunning(Date.now())
+      // The observable live rate decays only through a short stale tail. Opaque
+      // provider work after that is not charged to a numerator we cannot see.
       if (dirty || running) {
         dirty = false
         setVersion((v) => v + 1)
@@ -504,62 +555,73 @@ const definition: Plugin.Definition = {
     }
 
     const onDelta = (e: DeltaEvent) => {
-      if (!isActive()) return
-      tracker.push(e.data.sessionID, e.data.delta, Date.now(), e.data.assistantMessageID)
+      if (!isActive() || !isNewEvent(e)) return
+      tracker.push(e.data.sessionID, e.data.delta, e.created, e.data.assistantMessageID, blockID(e))
+      touch()
+    }
+    const onBlockStarted = (e: BlockStartedEvent) => {
+      if (!isActive() || !isNewEvent(e)) return
+      tracker.beginBlock(e.data.sessionID, e.data.assistantMessageID, blockID(e), e.created)
+    }
+    const onBlockEnded = (e: BlockEndedEvent) => {
+      if (!isActive() || !isNewEvent(e)) return
+      tracker.finishBlock(e.data.sessionID, e.data.assistantMessageID, blockID(e), e.data.text, e.created)
       touch()
     }
     const onFinish = (e: FinishEvent) => {
-      if (!isActive()) return
-      tracker.finish(e.data.sessionID, Date.now())
+      if (!isActive() || !isNewEvent(e)) return
+      tracker.finish(e.data.sessionID, e.created)
       touch()
     }
     const onStepStarted = (e: StepStartedEvent) => {
-      if (!isActive()) return
-      tracker.beginStep(e.data.sessionID, e.data.assistantMessageID)
+      if (!isActive() || !isNewEvent(e)) return
+      tracker.beginStep(e.data.sessionID, e.data.assistantMessageID, e.created)
+      touch()
     }
     const onStepFinished = (e: StepFinishedEvent) => {
-      if (!isActive()) return
+      if (!isActive() || !isNewEvent(e)) return
       const tokens = e.data.tokens
+      const generatedTokens =
+        tokens !== undefined &&
+        Number.isFinite(tokens.output) &&
+        tokens.output >= 0 &&
+        Number.isFinite(tokens.reasoning) &&
+        tokens.reasoning >= 0
+          ? tokens.output + tokens.reasoning
+          : undefined
       tracker.finishStep(
         e.data.sessionID,
         e.data.assistantMessageID,
-        tokens === undefined ? undefined : tokens.output + tokens.reasoning,
-        Date.now(),
+        generatedTokens,
+        e.created,
       )
       touch()
-    }
-    const onToolStarted = (e: ToolStartedEvent) => {
-      if (!isActive()) return
-      tracker.beginTool(e.data.sessionID, e.data.assistantMessageID, e.data.id, Date.now())
-    }
-    const onToolFinished = (e: ToolFinishedEvent) => {
-      if (!isActive()) return
-      tracker.finishTool(e.data.sessionID, e.data.assistantMessageID, e.data.id, Date.now())
     }
 
     const unsubs = [
       ctx.data.on("session.execution.started", (e) => {
-        if (!isActive()) return
+        if (!isActive() || !isNewEvent(e)) return
         tracker.beginRun(e.data.sessionID)
         touch()
       }),
       ctx.data.on("session.text.delta", onDelta),
       ctx.data.on("session.reasoning.delta", onDelta),
-      // Tool arguments are model output too: without this the indicator blanks
-      // partway through every large write/edit while generation is at full rate.
       ctx.data.on("session.tool.input.delta", onDelta),
+      ctx.data.on("session.text.started", onBlockStarted),
+      ctx.data.on("session.reasoning.started", onBlockStarted),
+      ctx.data.on("session.tool.input.started", onBlockStarted),
+      ctx.data.on("session.text.ended", onBlockEnded),
+      ctx.data.on("session.reasoning.ended", onBlockEnded),
+      ctx.data.on("session.tool.input.ended", onBlockEnded),
       ctx.data.on("session.step.started", onStepStarted),
       ctx.data.on("session.step.ended", onStepFinished),
       ctx.data.on("session.step.failed", onStepFinished),
-      ctx.data.on("session.tool.called", onToolStarted),
-      ctx.data.on("session.tool.success", onToolFinished),
-      ctx.data.on("session.tool.failed", onToolFinished),
       ctx.data.on("session.execution.succeeded", onFinish),
       ctx.data.on("session.execution.failed", onFinish),
       ctx.data.on("session.execution.interrupted", onFinish),
       ctx.data.on("session.idle", onFinish),
       ctx.data.on("session.deleted", (e) => {
-        if (!isActive()) return
+        if (!isActive() || !isNewEvent(e)) return
         tracker.evict(e.data.sessionID)
         touch()
       }),

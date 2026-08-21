@@ -2,13 +2,9 @@
 
 Live token-throughput indicator for the OpenCode 2 TUI prompt composer.
 
-While a session streams, the top right of the composer shows the estimated tokens and the throughput of the current run:
+While a session streams, the top right of the composer shows estimated observable tokens and throughput: `~1712 tok · ~51.5 t/s`
 
-```text
-1712 tok · 51.5 t/s
-```
-
-When the run ends, the number freezes at the run average and stays there until the next run starts. Nothing is shown on the home screen, or before the first token of a run.
+When OpenCode reports terminal usage, the token count becomes exact while TPS remains approximate, for example `1715 tok · ~51.5 t/s`. The result freezes until the next run starts. Nothing is shown on the home screen, or before the first observable output.
 
 <p align="center">
   <img src="docs/screenshots/opencode2_tps.png" width="750" alt="Composer showing live token-throughput indicator" />
@@ -16,7 +12,7 @@ When the run ends, the number freezes at the run average and stays there until t
 
 ## Install
 
-Built against the OpenCode 2 preview. The earliest known compatible beta is `0.0.0-beta-17595`; the latest tested beta is `0.0.0-beta-17639`. The TUI plugin API is still moving, so a much newer or older build may drop the indicator without an error: a renamed event stops arriving, and an unknown composer slot gets quietly rerouted. If the figure never appears, check your CLI version first.
+Built against the OpenCode 2 preview. The earliest known compatible beta is `0.0.0-beta-17595`; the latest tested beta is `0.0.0-beta-17639`. The TUI plugin API is still moving, so a much newer or older build may drop the indicator without an error. If the figure never appears, check your version first.
 
 Add the package to `~/.config/opencode/cli.json`:
 
@@ -69,9 +65,11 @@ The defaults are usable as they are. For the full option list, the ranges and mo
 
 ## How it works
 
-The plugin counts the output bytes of a run and estimates tokens from the byte total. When the host reports the session's real token counts, the plugin measures its own bytes-per-token ratio for that session and switches to it — until then it assumes 4.75 bytes per token. TPS is the run's estimated tokens divided by active model-generation time: timing starts at each step's first output and continues without pause for provider stalls, while tool-execution intervals and time between model steps are excluded.
+While output streams, the plugin estimates tokens from observable UTF-8 bytes at a default of 4.75 bytes per token and calculates a bounded rolling delivery rate. Complete text, reasoning, and tool-input events reconcile buffered or missed deltas without creating artificial live-rate spikes.
 
-The measured ratio depends on the model and is calibrated once per session. Changing models mid-session can therefore make the token and t/s estimates inaccurate; start a new session after switching models for a fresh calibration. This also avoids the prompt-cache disruption associated with changing models in existing sessions.
+At the end of each model step, OpenCode's reported output and reasoning usage replaces the byte estimate. Settled TPS divides those exact tokens by observed step spans ending at the final model-content boundary, which excludes later local tool execution and time between model calls.
+
+TPS is always approximate (`~`) because OpenCode does not expose token-level timestamps. Proprietary reasoning may be encrypted or represented only by a short summary, and some providers buffer tool arguments until completion. During those opaque intervals the live rate holds or becomes unavailable instead of continuously falling. Opaque provider state is never counted by byte length.
 
 For more detail, see [Architecture](docs/development.md#architecture).
 
