@@ -14,7 +14,13 @@ When OpenCode reports terminal usage, the token count becomes exact while TPS re
 
 Built against the OpenCode 2 preview. The earliest known compatible beta is `0.0.0-beta-17595`; the latest tested beta is `0.0.0-beta-19381`. The TUI plugin API is still moving, so a much newer or older build may drop the indicator without an error. If the figure never appears, check your version first.
 
-Add the package to `~/.config/opencode/cli.json`:
+Install it with the CLI's plugin command, which adds the entry to `~/.config/opencode/cli.json` for you:
+
+```sh
+opencode2 plugin add opencode2-tps
+```
+
+Or add the package to `~/.config/opencode/cli.json` yourself:
 
 ```json
 {
@@ -67,7 +73,9 @@ The defaults are usable as they are. For the full option list, the ranges and mo
 
 While output streams, the plugin estimates tokens from observable UTF-8 bytes at a default of 4.75 bytes per token and calculates a bounded rolling delivery rate. Complete text, reasoning, and tool-input events reconcile buffered or missed deltas without creating artificial live-rate spikes.
 
-At the end of each model step, OpenCode's reported output and reasoning usage replaces the byte estimate. Settled TPS divides those exact tokens by observed step spans ending at the final model-content boundary, which excludes later local tool execution and time between model calls.
+At the end of each model step, OpenCode's reported output and reasoning usage replaces the byte estimate. Settled TPS divides those exact tokens by observed step spans ending at `session.step.streamed`, the host's authoritative end of the model stream, published before local tools join. Hosts that do not publish the event fall back to the final model-content boundary. Either way, local tool execution and time between model calls are excluded.
+
+OpenCode's built-in assistant-footer t/s divides visible output tokens by the same step spans, leaving hidden reasoning out of its numerator. This plugin counts output plus reasoning, so on reasoning models its settled figure reads higher than the built-in one — those tokens were generated too.
 
 TPS is always approximate (`~`) because OpenCode does not expose token-level timestamps. Proprietary reasoning may be encrypted or represented only by a short summary, and some providers buffer tool arguments until completion. During those opaque intervals the live rate holds or becomes unavailable instead of continuously falling. Opaque provider state is never counted by byte length.
 
