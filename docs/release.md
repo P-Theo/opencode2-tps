@@ -40,7 +40,7 @@ The host reuses the newest generation without contacting the registry, so the st
 
 ## 4. Publish a prerelease
 
-Use a version such as `0.1.0-rc.1`.
+Use a version such as `0.1.0-rc.1`, bumped and merged through a release pull request as in step 6 — before step 1, so the tarball under test is the artifact that ships.
 
 ```sh
 npm publish --tag next
@@ -49,6 +49,12 @@ npm publish --tag next
 Always pass a tag. An untagged publish becomes `latest`, prerelease version or not.
 
 ## 5. Install from the registry
+
+Delete the `@next` cache directory first: `plugin add` reuses the newest cached generation without contacting the registry, so a prerelease left over from an earlier verification would be installed instead — and routed by its old exports map.
+
+```sh
+rm -rf ~/.cache/opencode/npm/opencode2-tps@next
+```
 
 Add the prerelease with the CLI's plugin command, which installs it into the host cache and adds the entry to `cli.json` (remove any `latest` entry first — the last entry wins):
 
@@ -62,9 +68,16 @@ This is the only step that exercises registry resolution, the plugin-add routing
 
 `npm version` refuses a dirty tree, so commit the work first. It writes the version, commits it, and tags it `v<version>` to match the existing tags.
 
+`main` only accepts commits through a pull request, so the bump travels on a release branch. Merge it with a merge commit — a rebase or squash merge rewrites the commit and leaves the tag pointing outside `main`'s history:
+
 ```sh
+git checkout -b release/<version>
 npm version patch
-git push --follow-tags
+git push -u origin release/<version>
+gh pr create --base main --head release/<version> --title <version> --body "..."
+gh pr merge release/<version> --merge --delete-branch --auto
+git checkout main && git pull
+git push origin v<version>
 npm publish
 ```
 
