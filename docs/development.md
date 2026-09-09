@@ -12,15 +12,17 @@ npm run build   # write dist/tui.js
 
 ## Run from source
 
-Point a path entry in `cli.json` at the source file. The host watches it and reloads the plugin whenever you save `tps.tsx`.
+Point a path entry in `cli.json` at this repository's directory. The loader resolves `<directory>/tui.tsx`, which re-exports the plugin definition from `tps.tsx`, transforms the source, and watches it — saving `tps.tsx` reloads the plugin without a restart.
 
 ```json
 {
   "plugins": [
-    { "package": "/absolute/path/to/tps.tsx", "options": { "debug": true } }
+    { "package": "/absolute/path/to/opencode2-tps", "options": { "debug": true } }
   ]
 }
 ```
+
+The entry must be a directory containing a `tui.tsx` entry file. Current betas skip entries that point at a file, so pointing at `tps.tsx` or `dist/tui.js` directly loads nothing.
 
 `package` takes an absolute path, a `file://` URL, or a relative path that starts with `./` or `../` and resolves against the directory holding `cli.json`. Anything else is read as a package name.
 
@@ -28,7 +30,7 @@ The host also picks up plugins from a `plugin` or `plugins` directory in the con
 
 ## Build
 
-The host only applies the Solid transform outside `node_modules`, and an installed package lives inside it, so `build.mjs` runs the transform ahead of time and writes `dist/tui.js`. See `build.mjs` and the `exports` and `files` fields in `package.json`.
+The host only applies the Solid transform outside `node_modules`, and an installed package lives inside it, so `build.mjs` runs the transform ahead of time and writes `dist/tui.js`. See `build.mjs` and the `exports` and `files` fields in `package.json`. The tarball ships only `dist`, so `tui.tsx` never reaches the package — it exists only for path entries.
 
 `solid-js` and `@opentui/solid` are optional peer dependencies; the host supplies its own copies.
 
@@ -49,7 +51,7 @@ That means one directory and one log per PID. Hot reloads append to the same fil
 - It estimates live tokens from observable UTF-8 bytes at 4.75 bytes per token by default. Complete block values reconcile buffered or missed deltas.
 - Live TPS is a bounded rolling rate over observable deltas. Its denominator stops after a short stale tail because silence may be encrypted reasoning or buffered tool input rather than inactivity.
 - A completed model step reports exact generated usage as `tokens.output + tokens.reasoning`. This replaces that step's byte estimate.
-- Settled TPS sums exact step tokens and divides once by the sum of observed step spans. Each span runs from `session.step.started` to the final `session.text.ended`, `session.reasoning.ended`, or `session.tool.input.ended` boundary. Delayed step settlement, local tool execution, and time between model steps are excluded.
+- Settled TPS sums exact step tokens and divides once by the sum of observed step spans. Each span runs from `session.step.started` to `session.step.streamed`, the host's authoritative end of the model stream, published after the provider stream exits and before local tools join. Hosts that do not publish `session.step.streamed` fall back to the final `session.text.ended`, `session.reasoning.ended`, or `session.tool.input.ended` boundary. Delayed step settlement, local tool execution, and time between model steps are excluded.
 - TPS remains approximate because the host does not expose token-level provider timestamps. Encrypted content, signatures, and other opaque provider state are never byte-counted.
 - A single timer draws the label, and it stops after the live stale tail or when a step settles.
 - A finished run keeps its state until the next run replaces it, and the number of tracked sessions is bounded. See `MAX_TRACKED_RUNS` in `tps.tsx`.
@@ -68,10 +70,11 @@ One user prompt becomes a stream of events; the tracker does the bookkeeping bel
 | An output block begins                             | `session.*.started` (m1)                          | create an idempotent text, reasoning, or tool-input block                                                    |
 | Observable output streams                          | `session.*.delta` (m1)                            | add UTF-8 bytes and a rolling-rate sample                                                                    |
 | The complete block becomes available               | `session.*.ended` (m1)                            | reconcile its full byte count and record the model-content boundary                                          |
-| The model step settles, possibly after a tool runs | `session.step.ended` / `failed` (m1)              | replace the estimate with reported usage when available; add duration only through the last content boundary |
+| The provider stream exits                          | `session.step.streamed` (m1)                      | record the authoritative span end, before local tools join                                                   |
+| The model step settles, possibly after a tool runs | `session.step.ended` / `failed` (m1)              | replace the estimate with reported usage when available; add duration through the streamed boundary          |
 | The whole execution finishes                       | `session.execution.succeeded` / `failed` / `idle` | freeze exact settled tokens plus any explicitly estimated partial output                                     |
 
-OpenCode beta versions may omit `session.tool.input.delta` entirely and provide only the complete `session.tool.input.ended` text. Newer versions may stream both. Ended-value reconciliation supports both without double-counting.
+Current betas no longer publish `session.tool.input.delta`; tool arguments arrive only as the complete `session.tool.input.ended` text. Older betas streamed both, and the plugin still subscribes to the delta event for them. Ended-value reconciliation supports either without double-counting.
 
 ## Release
 

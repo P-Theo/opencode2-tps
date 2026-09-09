@@ -2,7 +2,7 @@
 
 Maintainer runbook.
 
-A path entry loads `tps.tsx` and lets the host transform it; an installed package loads the pre-built `dist/tui.js`. Those are two different code paths, so the bundle gets tested before it goes out.
+A path entry loads the `tui.tsx` source through the host's transform; an installed package loads the pre-built `dist/tui.js` through the `exports` subpath. Those are two different code paths, so the bundle gets tested before it goes out.
 
 A docs-only release skips steps 1 to 5. The bundle is unchanged, and CI already packs and imports the artifact on every push to `main`. Go straight to step 6. npmjs.com only refreshes the rendered README when a new version is published, so a README change that matters on the package page needs a patch release to reach it.
 
@@ -16,24 +16,27 @@ npm pack --pack-destination /tmp
 
 The tarball holds `dist/tui.js`, `package.json`, `README.md` and `LICENSE`. The host entry point is `exports["./tui"]`.
 
-## 2. Install it somewhere clean
+## 2. Install the tarball into the host's cache
+
+The host resolves a bare-name entry from its own cache, `~/.cache/opencode/npm/<name>@<spec>/<generation>/`, where the newest generation wins. Stage the tarball as a new generation:
 
 ```sh
-mkdir -p /tmp/tps-verify && cd /tmp/tps-verify && npm init -y
-npm i /tmp/opencode2-tps-<version>.tgz
+gen=~/.cache/opencode/npm/opencode2-tps@latest/$(date +%s%3N)
+mkdir -p "$gen" && cd "$gen"
+npm init -y && npm i /tmp/opencode2-tps-<version>.tgz
 ```
 
 ## 3. Load the bundle
 
-Point `cli.json` at the installed file, start the TUI and send a prompt.
+Keep the bare-name entry in `cli.json` — the same entry a registry install uses — start the TUI and send a prompt. The host resolves the bare name to the newest generation and loads `dist/tui.js` through `exports["./tui"]`, the same resolution a registry install gets, minus the registry.
 
 ```json
 {
-  "plugins": [
-    { "package": "/tmp/tps-verify/node_modules/opencode2-tps/dist/tui.js" }
-  ]
+  "plugins": ["opencode2-tps"]
 }
 ```
+
+The host reuses the newest generation without contacting the registry, so the staged build stays in place across restarts. Delete the generation directory to fall back to the published version.
 
 ## 4. Publish a prerelease
 
@@ -47,11 +50,13 @@ Always pass a tag. An untagged publish becomes `latest`, prerelease version or n
 
 ## 5. Install from the registry
 
-Install the prerelease, then reference the plugin by name in `cli.json`. This is the only step that exercises registry resolution, the `exports` subpath, and the bare-string entry form.
+Add the prerelease with the CLI's plugin command, which installs it into the host cache and adds the entry to `cli.json` (remove any `latest` entry first — the last entry wins):
 
 ```sh
-npm i opencode2-tps@next
+opencode2 plugin add opencode2-tps@next
 ```
+
+This is the only step that exercises registry resolution, the plugin-add routing, the `exports` subpath, and the bare-string entry form. Restart the TUI afterwards.
 
 ## 6. Publish the release
 
@@ -79,16 +84,16 @@ Skip this for a prerelease. Those ship under `--tag next` and are not announceme
 
 ## 8. Invalidate the plugin cache
 
-The host caches an installed plugin under `~/.cache/opencode/packages/<entry>/` on Linux, keyed on the entry text, and never refreshes it. A maintainer who verified a prerelease is still running that build. Delete the directories and restart the TUI.
+The host installs a registry plugin under `~/.cache/opencode/npm/<name>@<spec>/<generation>/` on Linux. A generation is a millisecond-timestamped directory with a full `node_modules` inside; the newest generation wins, and the host reuses it without contacting the registry. A restart alone may therefore not pick up a freshly published version. Delete the spec's cache directory and restart the TUI:
 
 ```sh
-rm -rf ~/.cache/opencode/packages/opencode2-tps ~/.cache/opencode/packages/'opencode2-tps@next'
+rm -rf ~/.cache/opencode/npm/opencode2-tps@latest ~/.cache/opencode/npm/opencode2-tps@next
 ```
 
-Restart, then confirm the host reinstalled the version that was just published.
+Restart, then confirm the host installed the version that was just published:
 
 ```sh
-node -p "require(process.env.HOME + '/.cache/opencode/packages/opencode2-tps/node_modules/opencode2-tps/package.json').version"
+grep -h '"version"' ~/.cache/opencode/npm/opencode2-tps@latest/*/node_modules/opencode2-tps/package.json
 ```
 
-Dropping the `@next` directory too keeps a stale prerelease from being loaded by an old `cli.json` entry.
+One line prints per generation; the last one is the newest. Dropping the `@next` directory too keeps a stale prerelease from being loaded by an old `cli.json` entry. Old generations are pruned when a plugin update runs — only the two newest are kept, and anything older is removed after seven days — so manual cleanup is only needed to force a re-install.
