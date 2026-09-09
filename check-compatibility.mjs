@@ -4,7 +4,7 @@ import { resolve } from "node:path"
 
 const packageJson = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8"))
 const readme = readFileSync(new URL("./README.md", import.meta.url), "utf8")
-const packages = ["@opencode-ai/cli", "@opencode-ai/plugin", "@opencode-ai/theme"]
+const packages = ["@opencode/cli", "@opencode/plugin", "@opencode/theme"]
 const versions = packages.map((name) => packageJson.devDependencies[name])
 const version = versions[0]
 
