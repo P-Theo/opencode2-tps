@@ -125,6 +125,137 @@ describe("TpsTracker", () => {
     expect(tracker.value("s", 50_000)?.tps).toBeCloseTo(100 / 1.5)
   })
 
+  test("prefers the streamed boundary over the last content boundary", () => {
+    const tracker = new TpsTracker()
+    tracker.beginStep("s", "m1", 0)
+    tracker.finishBlock("s", "m1", "text:0", DELTA, 1000)
+    tracker.markStreamed("s", "m1", 1500)
+    tracker.finishStep("s", "m1", 20, 10_000)
+    tracker.finish("s", 11_000)
+    expect(tracker.value("s", 11_000)?.tps).toBeCloseTo(20 / 1.5)
+  })
+
+  test("falls back to the last content boundary without a streamed event", () => {
+    const tracker = new TpsTracker()
+    tracker.beginStep("s", "m1", 0)
+    tracker.finishBlock("s", "m1", "text:0", DELTA, 1000)
+    tracker.finishStep("s", "m1", 20, 10_000)
+    tracker.finish("s", 11_000)
+    expect(tracker.value("s", 11_000)?.tps).toBeCloseTo(20)
+  })
+
+  test("gives a zero-output step a duration from the streamed boundary", () => {
+    // Gemini hidden thinking: exact usage, no observable content events at all.
+    const tracker = new TpsTracker()
+    tracker.beginStep("s", "m1", 1000)
+    tracker.markStreamed("s", "m1", 4000)
+    tracker.finishStep("s", "m1", 300, 9000)
+    tracker.finish("s", 10_000)
+    const value = tracker.value("s", 10_000)
+    expect(value).toMatchObject({ tokens: 300, tokensEstimated: false })
+    expect(value?.tps).toBeCloseTo(100)
+  })
+
+  test("excludes local tool execution between the streamed boundary and step settlement", () => {
+    const tracker = new TpsTracker()
+    tracker.beginStep("s", "m1", 0)
+    tracker.finishBlock("s", "m1", "tool:t1", "{}", 500)
+    tracker.markStreamed("s", "m1", 1000)
+    tracker.finishStep("s", "m1", 50, 10_000)
+    tracker.beginStep("s", "m2", 30_000)
+    tracker.finishBlock("s", "m2", "text:0", "done", 31_000)
+    tracker.finishStep("s", "m2", 50, 40_000)
+    tracker.finish("s", 50_000)
+    expect(tracker.value("s", 50_000)?.tps).toBeCloseTo(50)
+  })
+
+  test("failed steps with usage settle exactly against the streamed boundary", () => {
+    const tracker = new TpsTracker()
+    tracker.beginStep("s", "m1", 0)
+    tracker.finishBlock("s", "m1", "text:0", DELTA, 1000)
+    tracker.markStreamed("s", "m1", 1200)
+    tracker.finishStep("s", "m1", 17, 2000)
+    tracker.finish("s", 3000)
+    expect(tracker.value("s", 3000)).toMatchObject({ tokens: 17, tokensEstimated: false, partial: false })
+    expect(tracker.value("s", 3000)?.tps).toBeCloseTo(17 / 1.2)
+  })
+
+  test("an interrupted step keeps its streamed boundary in the partial freeze", () => {
+    const tracker = new TpsTracker()
+    tracker.beginStep("s", "m1", 0)
+    tracker.finishBlock("s", "m1", "text:0", DELTA, 1000)
+    tracker.markStreamed("s", "m1", 1500)
+    tracker.finish("s", 2000)
+    expect(tracker.value("s", 2000)).toMatchObject({ tokens: 11, tokensEstimated: true, partial: true, frozen: true })
+    expect(tracker.value("s", 2000)?.tps).toBeCloseTo(11 / 1.5)
+  })
+
+  test("a retried step's latest streamed boundary wins", () => {
+    const tracker = new TpsTracker()
+    tracker.beginStep("s", "m1", 0)
+    tracker.markStreamed("s", "m1", 1000)
+    tracker.markStreamed("s", "m1", 5000)
+    tracker.finishStep("s", "m1", 20, 6000)
+    tracker.finish("s", 7000)
+    expect(tracker.value("s", 7000)?.tps).toBeCloseTo(4)
+  })
+
+  test("ignores streamed boundaries for unknown or mismatched steps", () => {
+    const tracker = new TpsTracker()
+    tracker.beginStep("s", "m1", 0)
+    tracker.markStreamed("s", "other", 1000)
+    tracker.markStreamed("elsewhere", "m1", 1500)
+    tracker.finishBlock("s", "m1", "text:0", DELTA, 2000)
+    tracker.finishStep("s", "m1", 20, 3000)
+    tracker.finish("s", 4000)
+    expect(tracker.value("s", 4000)?.tps).toBeCloseTo(10)
+  })
+
+  test("OpenAI Responses shape: summary deltas stream, encrypted reasoning arrives only at settlement", () => {
+    const tracker = new TpsTracker()
+    tracker.beginStep("s", "m1", 0)
+    tracker.beginBlock("s", "m1", "reasoning:0", 100)
+    tracker.push("s", "a".repeat(95), 200, "m1", "reasoning:0")
+    tracker.finishBlock("s", "m1", "reasoning:0", "a".repeat(95), 1000)
+    tracker.beginBlock("s", "m1", "text:0", 1100)
+    tracker.push("s", "b".repeat(95), 1200, "m1", "text:0")
+    tracker.finishBlock("s", "m1", "text:0", "b".repeat(95), 2000)
+    tracker.markStreamed("s", "m1", 2100)
+    tracker.finishStep("s", "m1", 200, 9000) // 20 visible + 180 encrypted reasoning
+    tracker.finish("s", 10_000)
+    const value = tracker.value("s", 10_000)
+    expect(value).toMatchObject({ tokens: 200, tokensEstimated: false })
+    expect(value?.tps).toBeCloseTo(200 / 2.1)
+  })
+
+  test("Anthropic shape: thinking deltas stream and thinking tokens settle exactly", () => {
+    const tracker = new TpsTracker()
+    tracker.beginStep("s", "m1", 0)
+    tracker.beginBlock("s", "m1", "reasoning:0", 100)
+    tracker.push("s", "t".repeat(95), 200, "m1", "reasoning:0")
+    tracker.finishBlock("s", "m1", "reasoning:0", "t".repeat(95), 1500)
+    tracker.beginBlock("s", "m1", "text:0", 1600)
+    tracker.finishBlock("s", "m1", "text:0", "ok", 1800)
+    tracker.markStreamed("s", "m1", 1900)
+    tracker.finishStep("s", "m1", 150, 5000) // 30 visible + 120 thinking
+    tracker.finish("s", 6000)
+    expect(tracker.value("s", 6000)).toMatchObject({ tokens: 150, tokensEstimated: false })
+    expect(tracker.value("s", 6000)?.tps).toBeCloseTo(150 / 1.9)
+  })
+
+  test("Gemini shape: signature-only thinking leaves no reasoning deltas, thoughts settle exactly", () => {
+    const tracker = new TpsTracker()
+    tracker.beginStep("s", "m1", 1000)
+    tracker.beginBlock("s", "m1", "text:0", 3000)
+    tracker.finishBlock("s", "m1", "text:0", "done", 3500)
+    tracker.markStreamed("s", "m1", 3600)
+    tracker.finishStep("s", "m1", 260, 9000) // 60 visible + 200 thoughts
+    tracker.finish("s", 10_000)
+    const value = tracker.value("s", 10_000)
+    expect(value).toMatchObject({ tokens: 260, tokensEstimated: false })
+    expect(value?.tps).toBeCloseTo(100)
+  })
+
   test("holds the settled average while a new step has no live samples", () => {
     const tracker = new TpsTracker()
     tracker.beginStep("s", "m1", 0)
@@ -494,6 +625,7 @@ describe("plugin setup", () => {
       "session.reasoning.ended",
       "session.tool.input.ended",
       "session.step.started",
+      "session.step.streamed",
       "session.step.ended",
       "session.step.failed",
       "session.execution.succeeded",
@@ -558,21 +690,24 @@ describe("plugin setup", () => {
     delete process.env["TPS_DEBUG"]
     const h = createHarness({ debug: true })
     const sessionID = "s\n\u001b[31mforged"
-    h.emit("session.execution.started", { sessionID })
-    h.emit("session.step.started", { sessionID, assistantMessageID: "m1" })
-    h.emit("session.text.delta", { sessionID, assistantMessageID: "m1", ordinal: 0, delta: "a".repeat(4_000) })
+    h.emit("session.execution.started", { sessionID }, 1_000)
+    h.emit("session.step.started", { sessionID, assistantMessageID: "m1" }, 2_000)
+    h.emit("session.text.delta", { sessionID, assistantMessageID: "m1", ordinal: 0, delta: "a".repeat(4_000) }, 2_100)
     h.emit("session.text.ended", {
       sessionID,
       assistantMessageID: "m1",
       ordinal: 0,
       text: "a".repeat(4_000),
-    })
+    }, 3_000)
+    h.emit("session.step.streamed", { sessionID, assistantMessageID: "m1" }, 3_200, "evt_streamed")
+    // A replayed delivery of the same event must not move the boundary.
+    h.emit("session.step.streamed", { sessionID, assistantMessageID: "m1" }, 500_000, "evt_streamed")
     h.emit("session.step.ended", {
       sessionID,
       assistantMessageID: "m1",
       tokens: { output: 700, reasoning: 100 },
-    })
-    h.emit("session.idle", { sessionID })
+    }, 4_000)
+    h.emit("session.idle", { sessionID }, 4_100)
     h.tick()
     h.cleanup()
     h.restore()
@@ -586,7 +721,7 @@ describe("plugin setup", () => {
     const log = Bun.file(join(dir, "tps.log"))
     expect(log.size).toBeGreaterThan(0)
     const text = await log.text()
-    expect(text).toContain("finish sid=s\\u000a\\u001b[31mforged tokens=800")
+    expect(text).toContain("finish sid=s\\u000a\\u001b[31mforged tokens=800 observedMs=1200 tps=666.7")
     expect(text).not.toContain(sessionID)
     // The old predictable path must stay unused.
     expect(existsSync(join(tmpdir(), `tps-debug-${process.pid}.log`))).toBe(false)

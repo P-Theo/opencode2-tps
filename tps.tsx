@@ -1,5 +1,5 @@
 /** @jsxImportSource @opentui/solid */
-import type { Plugin } from "@opencode-ai/plugin/tui"
+import type { Plugin } from "@opencode/plugin/tui"
 import { createMemo, createSignal, Show } from "solid-js"
 import { appendFileSync, lstatSync, mkdirSync, mkdtempSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -130,6 +130,7 @@ interface OutputBlock {
 interface StepState {
   readonly assistantMessageID: string
   readonly startedAt: number
+  streamedAt: number | null
   lastBoundaryAt: number | null
   observableBytes: number
   readonly blocks: Map<string, OutputBlock>
@@ -229,6 +230,7 @@ export class TpsTracker {
     const step: StepState = {
       assistantMessageID,
       startedAt: now,
+      streamedAt: null,
       lastBoundaryAt: null,
       observableBytes: 0,
       blocks: new Map(),
@@ -300,6 +302,19 @@ export class TpsTracker {
     step.lastBoundaryAt = Math.max(step.lastBoundaryAt ?? now, now)
   }
 
+  /**
+   * The host's authoritative end of the model stream, published after the
+   * provider stream exits and before local tools join. Assigned rather than
+   * maxed so a retried attempt reusing the message ID moves the boundary to its
+   * own completion.
+   */
+  markStreamed(sessionID: string, assistantMessageID: string, now: number): void {
+    const st = this.runs.get(sessionID)
+    const step = st?.activeStep
+    if (!step || step.assistantMessageID !== assistantMessageID) return
+    step.streamedAt = now
+  }
+
   private settleActiveStep(st: RunState, generatedTokens: number | undefined): void {
     const step = st.activeStep
     if (!step) return
@@ -309,7 +324,10 @@ export class TpsTracker {
       st.tokensEstimated = true
       st.partial = true
     }
-    if (step.lastBoundaryAt !== null) st.settledDurationMs += Math.max(0, step.lastBoundaryAt - step.startedAt)
+    // `session.step.streamed` is the exact stream end; the last content boundary
+    // remains the fallback for hosts that do not publish it.
+    const end = step.streamedAt ?? step.lastBoundaryAt
+    if (end !== null) st.settledDurationMs += Math.max(0, end - step.startedAt)
     st.settledSteps.add(step.assistantMessageID)
     st.activeStep = null
   }
@@ -477,6 +495,7 @@ type FinishEvent = EventOf<
   "session.execution.succeeded" | "session.execution.failed" | "session.execution.interrupted" | "session.idle"
 >
 type StepStartedEvent = EventOf<"session.step.started">
+type StepStreamedEvent = EventOf<"session.step.streamed">
 type StepFinishedEvent = EventOf<"session.step.ended" | "session.step.failed">
 
 function blockID(e: DeltaEvent | BlockStartedEvent | BlockEndedEvent): string {
@@ -578,6 +597,11 @@ const definition: Plugin.Definition = {
       tracker.beginStep(e.data.sessionID, e.data.assistantMessageID, e.created)
       touch()
     }
+    const onStepStreamed = (e: StepStreamedEvent) => {
+      if (!isActive() || !isNewEvent(e)) return
+      tracker.markStreamed(e.data.sessionID, e.data.assistantMessageID, e.created)
+      touch()
+    }
     const onStepFinished = (e: StepFinishedEvent) => {
       if (!isActive() || !isNewEvent(e)) return
       const tokens = e.data.tokens
@@ -614,6 +638,7 @@ const definition: Plugin.Definition = {
       ctx.data.on("session.reasoning.ended", onBlockEnded),
       ctx.data.on("session.tool.input.ended", onBlockEnded),
       ctx.data.on("session.step.started", onStepStarted),
+      ctx.data.on("session.step.streamed", onStepStreamed),
       ctx.data.on("session.step.ended", onStepFinished),
       ctx.data.on("session.step.failed", onStepFinished),
       ctx.data.on("session.execution.succeeded", onFinish),

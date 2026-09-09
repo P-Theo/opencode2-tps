@@ -24,7 +24,7 @@
     {
       "description": "Update the installable OpenCode 2 compatibility packages from their beta tag",
       "matchManagers": ["npm"],
-      "matchDepNames": ["@opencode-ai/cli", "@opencode-ai/plugin", "@opencode-ai/theme"],
+      "matchDepNames": ["@opencode/cli", "@opencode/plugin", "@opencode/theme"],
       "enabled": true,
       "followTag": "beta",
       "ignoreUnstable": false,
