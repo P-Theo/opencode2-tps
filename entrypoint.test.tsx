@@ -14,6 +14,7 @@ import type { Plugin } from "@opencode/plugin/tui"
 import type { TpsOptionsInput } from "./tps.tsx"
 
 const root = fileURLToPath(new URL(".", import.meta.url))
+
 const distEntry = new URL("./dist/tui.js", import.meta.url).href
 
 // 95 bytes / 4.75 bytes-per-token = 20 estimated tokens.
@@ -26,6 +27,7 @@ beforeAll(async () => {
   // — so every run tests a fresh dist/tui.js built exactly as the package
   // ships, even from a clean checkout and across watch-mode reruns.
   const build = spawnSync("node", ["build.mjs"], { cwd: root, encoding: "utf8" })
+
   if (build.status !== 0) throw new Error(`node build.mjs failed:\n${build.stderr || build.stdout}`)
   plugin = (await import(distEntry)).default
 })
@@ -81,6 +83,7 @@ function start(context: FakeContext): (() => void) | void {
   // a production cast.
   // oxlint-disable-next-line anti-slop/no-chained-type-assertions
   const setup = plugin.setup as unknown as FakeSetup
+
   return setup(context)
 }
 
@@ -109,8 +112,10 @@ function createHarness(options: TpsOptionsInput = {}): Harness {
     // without leaving a live interval behind.
     const handle = realSetInterval(() => {}, 60_000)
     realClearInterval(handle)
+
     return handle
   }
+
   globalThis.clearInterval = () => {
     flush = undefined
   }
@@ -127,12 +132,14 @@ function createHarness(options: TpsOptionsInput = {}): Harness {
         const list = handlers.get(type) ?? []
         list.push(handler)
         handlers.set(type, list)
+
         return () => handlers.delete(type)
       },
     },
     ui: {
       slot: (claim: Claim) => {
         claims.push(claim)
+
         return () => {}
       },
     },
@@ -165,6 +172,7 @@ describe("built entrypoint", () => {
   test("renders the live label through text, reasoning, and tool-input streaming", async () => {
     const h = createHarness()
     const app = await openApp(h, "ses_test")
+
     try {
       await app.renderOnce()
       expect(app.captureCharFrame()).not.toContain("tok")
@@ -198,6 +206,7 @@ describe("built entrypoint", () => {
   test("settles exactly and freezes after completion", async () => {
     const h = createHarness()
     const app = await openApp(h, "ses_test")
+
     try {
       const t0 = Date.now()
       h.emit("session.execution.started", { sessionID: "ses_test" }, t0)
@@ -236,6 +245,7 @@ describe("built entrypoint", () => {
   test("resets the figure when a new prompt starts", async () => {
     const h = createHarness()
     const app = await openApp(h, "ses_test")
+
     try {
       const t0 = Date.now()
       h.emit("session.execution.started", { sessionID: "ses_test" }, t0)
@@ -269,6 +279,7 @@ describe("built entrypoint", () => {
 
   test("keeps orchestrator and sub-agent sessions independent", async () => {
     const h = createHarness()
+
     const app = await testRender(
       () => (
         <box flexDirection="column">
@@ -278,6 +289,7 @@ describe("built entrypoint", () => {
       ),
       { width: 60, height: 8 },
     )
+
     try {
       const now = Date.now()
       h.emit("session.execution.started", { sessionID: "ses_sub" }, now)

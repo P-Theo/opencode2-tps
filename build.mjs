@@ -22,11 +22,15 @@ import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 
 const root = dirname(fileURLToPath(import.meta.url))
+
 const source = join(root, "tps.tsx")
+
 const outDir = join(root, "dist")
+
 const out = join(outDir, "tui.js")
 
 const code = await readFile(source, "utf8")
+
 const result = await transformAsync(code, {
   filename: source,
   configFile: false,
@@ -40,5 +44,7 @@ if (!result?.code) throw new Error("babel produced no output")
 const output = `${result.code}\n`
 
 await mkdir(outDir, { recursive: true })
+
 await writeFile(out, output, "utf8")
+
 console.log(`built ${out} (${Buffer.byteLength(output)} bytes)`)

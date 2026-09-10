@@ -24,10 +24,13 @@ const debugState = { enabled: false, file: "" }
 function isOwnPrivateDir(path: string): boolean {
   try {
     const stats = lstatSync(path) // lstat, not stat: a planted symlink must not pass
+
     if (!stats.isDirectory()) return false
     const uid = process.getuid?.()
+
     // Windows has no uid and a per-user temp directory, so there is nothing to check.
     if (uid === undefined) return true
+
     return stats.uid === uid && (stats.mode & 0o777) === 0o700
   } catch {
     return false
@@ -41,18 +44,23 @@ function isOwnPrivateDir(path: string): boolean {
  */
 function debugDir(): string {
   const preferred = join(tmpdir(), `${DEBUG_DIR_PREFIX}${process.pid}`)
+
   try {
     mkdirSync(preferred, { mode: 0o700 })
+
     return preferred
   } catch {
     if (isOwnPrivateDir(preferred)) return preferred
+
     return mkdtempSync(`${preferred}-`)
   }
 }
 
 function configureDebug(enabled: boolean): void {
   debugState.enabled = enabled
+
   if (!enabled || debugState.file) return
+
   try {
     debugState.file = join(debugDir(), "tps.log")
   } catch {
@@ -64,15 +72,18 @@ function configureDebug(enabled: boolean): void {
 export function isEnvEnabled(value: string | undefined): boolean {
   if (value === undefined) return false
   const normalized = value.trim().toLowerCase()
+
   return normalized === "1" || normalized === "true"
 }
 
 function mark(line: string): void {
   if (!debugState.enabled) return
+
   try {
     const safeLine = line.replace(/\p{Cc}/gu, (character) =>
       `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
     )
+
     appendFileSync(debugState.file, `${new Date().toISOString()} ${safeLine}\n`)
   } catch {
     // debug only; never break the host
@@ -92,9 +103,13 @@ export const DEFAULT_CONFIG: TpsConfig = {
 // The frozen final average stays visible until the next prompt starts a new run.
 
 const BYTES_PER_TOKEN_MIN = 1
+
 const BYTES_PER_TOKEN_MAX = 16
+
 const LIVE_WINDOW_MS = 5_000
+
 const LIVE_STALE_MS = 1_500
+
 const LIVE_MIN_DURATION_MS = 250
 
 function estimateTokens(bytes: number, bytesPerToken: number): number {
@@ -103,7 +118,9 @@ function estimateTokens(bytes: number, bytesPerToken: number): number {
 
 function formatTps(value: number): string {
   if (value < 10) return value.toFixed(2)
+
   if (value < 100) return value.toFixed(1)
+
   return Math.round(value).toString()
 }
 
@@ -176,6 +193,7 @@ export class TpsTracker {
 
   private state(sessionID: string): RunState {
     let st = this.runs.get(sessionID)
+
     if (!st) {
       st = {
         phase: "ended",
@@ -189,6 +207,7 @@ export class TpsTracker {
       }
       this.runs.set(sessionID, st)
     }
+
     return st
   }
 
@@ -212,8 +231,10 @@ export class TpsTracker {
 
   private evictStale(): void {
     if (this.runs.size <= MAX_TRACKED_RUNS) return
+
     for (const [sessionID, st] of this.runs) {
       if (this.runs.size <= MAX_TRACKED_RUNS) return
+
       if (st.phase === "running") continue
       this.dropSession(sessionID)
     }
@@ -221,12 +242,18 @@ export class TpsTracker {
 
   private ensureStep(sessionID: string, assistantMessageID: string, now: number, replace = false): StepState | null {
     const st = this.state(sessionID)
+
     if (st.settledSteps.has(assistantMessageID) || (st.phase === "ended" && st.frozen !== null)) return null
+
     if (st.phase !== "running") this.beginRun(sessionID)
     const running = this.state(sessionID)
+
     if (running.activeStep?.assistantMessageID === assistantMessageID) return running.activeStep
+
     if (running.activeStep && !replace) return null
+
     if (running.activeStep) this.settleActiveStep(running, undefined)
+
     const step: StepState = {
       assistantMessageID,
       startedAt: now,
@@ -236,24 +263,30 @@ export class TpsTracker {
       blocks: new Map(),
       samples: [],
     }
+
     running.activeStep = step
     running.frozen = null
+
     return step
   }
 
   beginStep(sessionID: string, assistantMessageID: string, now = Date.now()): void {
     const st = this.state(sessionID)
+
     if (st.phase !== "running") {
       if (st.settledSteps.has(assistantMessageID)) return
       this.beginRun(sessionID)
     }
+
     if (st.activeStep?.assistantMessageID === assistantMessageID) return
     this.ensureStep(sessionID, assistantMessageID, now, true)
   }
 
   beginBlock(sessionID: string, assistantMessageID: string, blockID: string, now: number): void {
     const step = this.ensureStep(sessionID, assistantMessageID, now)
+
     if (!step) return
+
     if (!step.blocks.has(blockID)) step.blocks.set(blockID, { streamedBytes: 0, finalBytes: null })
   }
 
@@ -266,18 +299,22 @@ export class TpsTracker {
   ): void {
     if (!delta) return
     const step = this.ensureStep(sessionID, assistantMessageID, now)
+
     if (!step) return
     let block = step.blocks.get(blockID)
+
     if (!block) {
       block = { streamedBytes: 0, finalBytes: null }
       step.blocks.set(blockID, block)
     }
+
     if (block.finalBytes !== null) return
     const bytes = Buffer.byteLength(delta, "utf8")
     block.streamedBytes += bytes
     step.observableBytes += bytes
     step.samples.push({ bytes, timestamp: now })
     const oldest = now - LIVE_WINDOW_MS
+
     while (step.samples[0] && step.samples[0].timestamp < oldest) step.samples.shift()
   }
 
@@ -290,12 +327,15 @@ export class TpsTracker {
   ): void {
     const st = this.runs.get(sessionID)
     const step = st?.activeStep
+
     if (!step || step.assistantMessageID !== assistantMessageID) return
     let block = step.blocks.get(blockID)
+
     if (!block) {
       block = { streamedBytes: 0, finalBytes: null }
       step.blocks.set(blockID, block)
     }
+
     if (block.finalBytes !== null) return
     block.finalBytes = Buffer.byteLength(text, "utf8")
     step.observableBytes += block.finalBytes - block.streamedBytes
@@ -311,22 +351,27 @@ export class TpsTracker {
   markStreamed(sessionID: string, assistantMessageID: string, now: number): void {
     const st = this.runs.get(sessionID)
     const step = st?.activeStep
+
     if (!step || step.assistantMessageID !== assistantMessageID) return
     step.streamedAt = now
   }
 
   private settleActiveStep(st: RunState, generatedTokens: number | undefined): void {
     const step = st.activeStep
+
     if (!step) return
     const exact = generatedTokens !== undefined && Number.isFinite(generatedTokens) && generatedTokens >= 0
     st.settledTokens += exact ? generatedTokens : estimateTokens(step.observableBytes, this.config.bytesPerToken)
+
     if (!exact) {
       st.tokensEstimated = true
       st.partial = true
     }
+
     // `session.step.streamed` is the exact stream end; the last content boundary
     // remains the fallback for hosts that do not publish it.
     const end = step.streamedAt ?? step.lastBoundaryAt
+
     if (end !== null) st.settledDurationMs += Math.max(0, end - step.startedAt)
     st.settledSteps.add(step.assistantMessageID)
     st.activeStep = null
@@ -334,20 +379,26 @@ export class TpsTracker {
 
   finishStep(sessionID: string, assistantMessageID: string, generatedTokens: number | undefined, _now: number): void {
     const st = this.runs.get(sessionID)
+
     if (st?.activeStep?.assistantMessageID !== assistantMessageID) return
     this.settleActiveStep(st, generatedTokens)
   }
 
   finish(sessionID: string, _now: number): void {
     const st = this.runs.get(sessionID)
+
     if (!st || st.phase === "ended") return
+
     if (st.activeStep) this.settleActiveStep(st, undefined)
     st.phase = "ended"
     const tokens = st.settledTokens
+
     if (tokens <= 0) {
       this.evictStale()
+
       return
     }
+
     const tps = st.settledDurationMs > 0 ? tokens / (st.settledDurationMs / 1000) : null
     st.frozen = { tps, tokens, tokensEstimated: st.tokensEstimated, partial: st.partial }
     mark(`finish sid=${sessionID} tokens=${tokens} observedMs=${st.settledDurationMs} tps=${tps?.toFixed(1) ?? "n/a"}`)
@@ -365,39 +416,49 @@ export class TpsTracker {
   hasRunning(now = Date.now()): boolean {
     for (const st of this.runs.values()) {
       const last = st.activeStep?.samples.at(-1)
+
       if (st.phase === "running" && last && now < last.timestamp + LIVE_STALE_MS) return true
     }
+
     return false
   }
 
   private liveTps(step: StepState, now: number): number | null {
     const last = step.samples.at(-1)
+
     if (!last) return null
     const effectiveNow = Math.min(now, last.timestamp + LIVE_STALE_MS)
     const oldest = effectiveNow - LIVE_WINDOW_MS
     const samples = step.samples.filter((sample) => sample.timestamp >= oldest)
     const first = samples[0]
+
     if (!first) return null
     const bytes = samples.reduce((total, sample) => total + sample.bytes, 0)
     const durationMs = Math.max(effectiveNow - first.timestamp, LIVE_MIN_DURATION_MS)
+
     return estimateTokens(bytes, this.config.bytesPerToken) / (durationMs / 1000)
   }
 
   value(sessionID: string, now: number): TpsValue | null {
     const st = this.runs.get(sessionID)
+
     if (!st) return null
+
     if (st.frozen)
       return {
         ...st.frozen,
         frozen: true,
         tpsEstimated: true,
       }
+
     if (st.phase !== "running") return null
     const active = st.activeStep
     const activeTokens = active ? estimateTokens(active.observableBytes, this.config.bytesPerToken) : 0
     const tokens = st.settledTokens + activeTokens
+
     if (tokens <= 0) return null
     const settledTps = st.settledDurationMs > 0 ? st.settledTokens / (st.settledDurationMs / 1000) : null
+
     return {
       tps: active ? (this.liveTps(active, now) ?? settledTps) : settledTps,
       tokens,
@@ -417,6 +478,7 @@ export class TpsTracker {
 // falls back to the default rather than propagating NaN into the arithmetic.
 
 const DISPLAY_MODES = ["both", "tokens", "tps"] as const
+
 export type DisplayMode = (typeof DISPLAY_MODES)[number]
 
 /**
@@ -456,6 +518,7 @@ function isDisplayMode(value: OptionValue | undefined): value is DisplayMode {
 
 function clampNumber(value: OptionValue | undefined, fallback: number, min: number, max: number): number {
   if (!isFiniteNumber(value)) return fallback
+
   return Math.min(Math.max(value, min), max)
 }
 
@@ -471,8 +534,11 @@ export function resolveOptions(raw: TpsOptionsInput): TpsOptions {
 export function formatLabel(value: TpsValue, display: DisplayMode): string {
   const tokens = `${value.tokensEstimated ? "~" : ""}${value.tokens} tok`
   const tps = value.tps === null ? null : `~${formatTps(value.tps)} t/s`
+
   if (display === "tokens") return tokens
+
   if (display === "tps") return tps ?? "— t/s"
+
   return tps === null ? tokens : `${tokens} · ${tps}`
 }
 
@@ -483,24 +549,33 @@ export function formatLabel(value: TpsValue, display: DisplayMode): string {
 // `data.listen` signature) rather than restated structurally: handlers are
 // contravariant, so hand-written shapes keep typechecking after a field rename.
 type PluginContext = Parameters<Plugin.Definition["setup"]>[0]
+
 type AnyEvent = Parameters<Parameters<PluginContext["data"]["listen"]>[0]>[0]["details"]
+
 type EventOf<Type extends AnyEvent["type"]> = Extract<AnyEvent, { type: Type }>
 
 type DeltaEvent = EventOf<"session.text.delta" | "session.reasoning.delta" | "session.tool.input.delta">
+
 type BlockStartedEvent = EventOf<
   "session.text.started" | "session.reasoning.started" | "session.tool.input.started"
 >
+
 type BlockEndedEvent = EventOf<"session.text.ended" | "session.reasoning.ended" | "session.tool.input.ended">
+
 type FinishEvent = EventOf<
   "session.execution.succeeded" | "session.execution.failed" | "session.execution.interrupted" | "session.idle"
 >
+
 type StepStartedEvent = EventOf<"session.step.started">
+
 type StepStreamedEvent = EventOf<"session.step.streamed">
+
 type StepFinishedEvent = EventOf<"session.step.ended" | "session.step.failed">
 
 function blockID(e: DeltaEvent | BlockStartedEvent | BlockEndedEvent): string {
   if (e.type === "session.tool.input.delta" || e.type === "session.tool.input.started" || e.type === "session.tool.input.ended")
     return `tool:${e.data.id}`
+
   return `${e.type.startsWith("session.text.") ? "text" : "reasoning"}:${e.data.ordinal}`
 }
 
@@ -528,10 +603,13 @@ const definition: Plugin.Definition = {
     const isNewEvent = (e: AnyEvent): boolean => {
       if (seenEventIDs.has(e.id)) return false
       seenEventIDs.add(e.id)
+
       if (seenEventIDs.size > 4_096) {
         const oldest = seenEventIDs.values().next().value
+
         if (oldest !== undefined) seenEventIDs.delete(oldest)
       }
+
       return true
     }
 
@@ -548,15 +626,19 @@ const definition: Plugin.Definition = {
       // A superseded generation stops ticking even if its cleanup never ran.
       if (!isActive()) {
         stopTimer()
+
         return
       }
+
       const running = tracker.hasRunning(Date.now())
+
       // The observable live rate decays only through a short stale tail. Opaque
       // provider work after that is not charged to a numerator we cannot see.
       if (dirty || running) {
         dirty = false
         setVersion((v) => v + 1)
       }
+
       if (!running) stopTimer()
     }
 
@@ -568,6 +650,7 @@ const definition: Plugin.Definition = {
 
     const touch = () => {
       dirty = true
+
       if (timer !== undefined) return
       timer = setInterval(flush, Math.round(1000 / options.refreshHz))
       timer.unref?.()
@@ -578,33 +661,40 @@ const definition: Plugin.Definition = {
       tracker.push(e.data.sessionID, e.data.delta, e.created, e.data.assistantMessageID, blockID(e))
       touch()
     }
+
     const onBlockStarted = (e: BlockStartedEvent) => {
       if (!isActive() || !isNewEvent(e)) return
       tracker.beginBlock(e.data.sessionID, e.data.assistantMessageID, blockID(e), e.created)
     }
+
     const onBlockEnded = (e: BlockEndedEvent) => {
       if (!isActive() || !isNewEvent(e)) return
       tracker.finishBlock(e.data.sessionID, e.data.assistantMessageID, blockID(e), e.data.text, e.created)
       touch()
     }
+
     const onFinish = (e: FinishEvent) => {
       if (!isActive() || !isNewEvent(e)) return
       tracker.finish(e.data.sessionID, e.created)
       touch()
     }
+
     const onStepStarted = (e: StepStartedEvent) => {
       if (!isActive() || !isNewEvent(e)) return
       tracker.beginStep(e.data.sessionID, e.data.assistantMessageID, e.created)
       touch()
     }
+
     const onStepStreamed = (e: StepStreamedEvent) => {
       if (!isActive() || !isNewEvent(e)) return
       tracker.markStreamed(e.data.sessionID, e.data.assistantMessageID, e.created)
       touch()
     }
+
     const onStepFinished = (e: StepFinishedEvent) => {
       if (!isActive() || !isNewEvent(e)) return
       const tokens = e.data.tokens
+
       const generatedTokens =
         tokens !== undefined &&
         Number.isFinite(tokens.output) &&
@@ -613,6 +703,7 @@ const definition: Plugin.Definition = {
         tokens.reasoning >= 0
           ? tokens.output + tokens.reasoning
           : undefined
+
       tracker.finishStep(
         e.data.sessionID,
         e.data.assistantMessageID,
@@ -657,11 +748,15 @@ const definition: Plugin.Definition = {
       render: (input) => {
         const label = createMemo(() => {
           version()
+
           if (!isActive()) return null
           const v = tracker.value(input.sessionID, Date.now())
+
           if (!v) return null
+
           return formatLabel(v, options.display)
         })
+
         return (
           <Show when={label()}>
             {(text: () => string) => (
@@ -678,6 +773,7 @@ const definition: Plugin.Definition = {
       for (const unsub of unsubs) unsub()
       unslot()
       stopTimer()
+
       if (gen.active === mine)
         setGen((d) => {
           d.active = 0
