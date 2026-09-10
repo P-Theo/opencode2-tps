@@ -10,6 +10,8 @@ npm test        # bun test
 npm run build   # write dist/tui.js
 ```
 
+Tests run through `bun test`. `bunfig.toml` preloads `@opentui/solid/preload` so tests use Solid's client build and can observe reactive updates. `tps.test.ts` covers the tracker and the event wiring, and `entrypoint.test.tsx` runs `build.mjs`, imports `dist/tui.js`, and renders the composer claim with `testRender` asserting the label appears while streaming, settles and freezes, resets for a new prompt, and stays per-session.
+
 ## Run from source
 
 Point a path entry in `cli.json` at this repository's directory. The loader resolves `<directory>/tui.tsx`, which re-exports the plugin definition from `tps.tsx`, transforms the source, and watches it — saving `tps.tsx` reloads the plugin without a restart.
@@ -17,7 +19,10 @@ Point a path entry in `cli.json` at this repository's directory. The loader reso
 ```json
 {
   "plugins": [
-    { "package": "/absolute/path/to/opencode2-tps", "options": { "debug": true } }
+    {
+      "package": "/absolute/path/to/opencode2-tps",
+      "options": { "debug": true }
+    }
   ]
 }
 ```
@@ -63,16 +68,16 @@ For the event names and the formulas, read `tps.tsx`.
 
 One user prompt becomes a stream of events; the tracker does the bookkeeping below for each step.
 
-| What happens                                       | Event                                             | Tracker action                                                                                               |
-| -------------------------------------------------- | ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| A new user prompt starts a run                     | `session.execution.started`                       | reset settled tokens, observed duration, and partial state                                                   |
-| The model begins a step of generation              | `session.step.started` (m1)                       | record the step timestamp and assistant-message ID                                                           |
-| An output block begins                             | `session.*.started` (m1)                          | create an idempotent text, reasoning, or tool-input block                                                    |
-| Observable output streams                          | `session.*.delta` (m1)                            | add UTF-8 bytes and a rolling-rate sample                                                                    |
-| The complete block becomes available               | `session.*.ended` (m1)                            | reconcile its full byte count and record the model-content boundary                                          |
-| The provider stream exits                          | `session.step.streamed` (m1)                      | record the authoritative span end, before local tools join                                                   |
-| The model step settles, possibly after a tool runs | `session.step.ended` / `failed` (m1)              | replace the estimate with reported usage when available; add duration through the streamed boundary          |
-| The whole execution finishes                       | `session.execution.succeeded` / `failed` / `idle` | freeze exact settled tokens plus any explicitly estimated partial output                                     |
+| What happens                                       | Event                                             | Tracker action                                                                                      |
+| -------------------------------------------------- | ------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| A new user prompt starts a run                     | `session.execution.started`                       | reset settled tokens, observed duration, and partial state                                          |
+| The model begins a step of generation              | `session.step.started` (m1)                       | record the step timestamp and assistant-message ID                                                  |
+| An output block begins                             | `session.*.started` (m1)                          | create an idempotent text, reasoning, or tool-input block                                           |
+| Observable output streams                          | `session.*.delta` (m1)                            | add UTF-8 bytes and a rolling-rate sample                                                           |
+| The complete block becomes available               | `session.*.ended` (m1)                            | reconcile its full byte count and record the model-content boundary                                 |
+| The provider stream exits                          | `session.step.streamed` (m1)                      | record the authoritative span end, before local tools join                                          |
+| The model step settles, possibly after a tool runs | `session.step.ended` / `failed` (m1)              | replace the estimate with reported usage when available; add duration through the streamed boundary |
+| The whole execution finishes                       | `session.execution.succeeded` / `failed` / `idle` | freeze exact settled tokens plus any explicitly estimated partial output                            |
 
 Current betas no longer publish `session.tool.input.delta`; tool arguments arrive only as the complete `session.tool.input.ended` text. Older betas streamed both, and the plugin still subscribes to the delta event for them. Ended-value reconciliation supports either without double-counting.
 
