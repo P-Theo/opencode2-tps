@@ -22,10 +22,11 @@ const DELTA = "a".repeat(95)
 let plugin: Plugin.Definition
 
 beforeAll(async () => {
-  // Spawn the real build so every run tests a fresh dist/tui.js, even from a
-  // clean checkout and across watch-mode reruns.
-  const build = spawnSync(process.execPath, ["build.mjs"], { cwd: root, encoding: "utf8" })
-  if (build.status !== 0) throw new Error(`build.mjs failed:\n${build.stderr || build.stdout}`)
+  // Spawn the production build with Node — the interpreter `npm run build` uses
+  // — so every run tests a fresh dist/tui.js built exactly as the package
+  // ships, even from a clean checkout and across watch-mode reruns.
+  const build = spawnSync("node", ["build.mjs"], { cwd: root, encoding: "utf8" })
+  if (build.status !== 0) throw new Error(`node build.mjs failed:\n${build.stderr || build.stdout}`)
   plugin = (await import(distEntry)).default
 })
 
