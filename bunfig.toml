@@ -1,0 +1,5 @@
+# Test files render through @opentui/solid. Without this preload, Bun resolves
+# solid-js to its server build (no reactivity), so render tests could not detect
+# a broken reactive update. The preload swaps in the client build.
+[test]
+preload = ["@opentui/solid/preload"]
