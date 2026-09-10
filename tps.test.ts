@@ -18,6 +18,7 @@ const DELTA = "a".repeat(50)
 describe("TpsTracker", () => {
   test("estimates live tokens from accumulated utf-8 bytes", () => {
     const tracker = new TpsTracker()
+
     for (let i = 0; i < 10; i += 1) tracker.push("s", "€", 1000 + i * 10)
     const value = tracker.value("s", 1090)
     expect(value?.tokens).toBe(7) // 30 bytes / 4.75
@@ -416,11 +417,13 @@ describe("TpsTracker", () => {
 
   test("caps how many finished runs it remembers, keeping the recent ones", () => {
     const tracker = new TpsTracker()
+
     // 65 sessions, each one run: the first started is the first forgotten.
     for (let i = 0; i < 65; i += 1) {
       tracker.push(`s${i}`, DELTA, i * 10)
       tracker.finish(`s${i}`, i * 10 + 100)
     }
+
     expect(tracker.value("s0", 10_000)).toBeNull()
     expect(tracker.value("s1", 10_000)?.frozen).toBe(true)
     expect(tracker.value("s64", 10_000)?.frozen).toBe(true)
@@ -429,16 +432,19 @@ describe("TpsTracker", () => {
   test("never evicts a streaming run to stay under the cap", () => {
     const tracker = new TpsTracker()
     tracker.push("live", DELTA, 0) // oldest entry, still running
+
     for (let i = 0; i < 100; i += 1) {
       tracker.push(`s${i}`, DELTA, 1000 + i * 10)
       tracker.finish(`s${i}`, 1000 + i * 10 + 10)
     }
+
     expect(tracker.value("live", 1000)?.frozen).toBe(false)
     expect(tracker.hasRunning(1000)).toBe(true)
   })
 
   test("re-applies the session cap when an oversized running set finishes", () => {
     const tracker = new TpsTracker()
+
     for (let i = 0; i < 65; i += 1) tracker.push(`s${i}`, DELTA, i)
     expect(tracker.value("s0", 100)).not.toBeNull()
     tracker.finish("s0", 100)
@@ -550,8 +556,10 @@ function createHarness(options: TpsOptionsInput = {}) {
     // without leaving a live interval behind.
     const handle = realSetInterval(() => {}, 60_000)
     realClearInterval(handle)
+
     return handle
   }
+
   globalThis.clearInterval = () => {
     timer.cleared += 1
     timer.callback = undefined
@@ -569,6 +577,7 @@ function createHarness(options: TpsOptionsInput = {}) {
         const list = handlers.get(type) ?? []
         list.push(handler)
         handlers.set(type, list)
+
         return () => handlers.delete(type)
       },
     },
@@ -579,6 +588,7 @@ function createHarness(options: TpsOptionsInput = {}) {
   // neither, and the timer assertions fail loudly if that ever changes.
   const started = setupWithFakeContext(ctx)
   const cleanup = started instanceof Function ? started : () => {}
+
   return {
     timer,
     subscribed: (type: string) => handlers.has(type),
@@ -601,6 +611,7 @@ function createHarness(options: TpsOptionsInput = {}) {
  */
 function debugDirs(): string[] {
   const own = `${DEBUG_DIR_PREFIX}${process.pid}`
+
   return readdirSync(tmpdir())
     .filter((entry) => entry === own || entry.startsWith(`${own}-`))
     .map((entry) => join(tmpdir(), entry))
@@ -613,6 +624,7 @@ describe("plugin setup", () => {
 
   test("subscribes to the events the tracker needs", () => {
     const h = createHarness()
+
     for (const type of [
       "session.execution.started",
       "session.text.delta",
@@ -636,6 +648,7 @@ describe("plugin setup", () => {
     ]) {
       expect(h.subscribed(type)).toBe(true)
     }
+
     h.cleanup()
     h.restore()
   })
@@ -744,6 +757,7 @@ describe("plugin setup", () => {
 describe("isEnvEnabled", () => {
   test("accepts only explicit truthy spellings", () => {
     for (const value of ["1", "true", "TRUE", " true "]) expect(isEnvEnabled(value)).toBe(true)
+
     // A shell script exporting TPS_DEBUG=0 must not start writing to disk.
     for (const value of [undefined, "", "0", "false", "no", "off"]) expect(isEnvEnabled(value)).toBe(false)
   })
