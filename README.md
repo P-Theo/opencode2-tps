@@ -12,7 +12,7 @@ When OpenCode reports terminal usage, the token count becomes exact while TPS re
 
 ## Install
 
-Built against the OpenCode 2 preview. The earliest known compatible beta is `0.0.0-beta-17595`; the latest tested beta is `0.0.0-beta-19381`. The TUI plugin API is still moving, so a much newer or older build may drop the indicator without an error. If the figure never appears, check your version first.
+Built against the OpenCode 2 preview. The earliest known compatible beta is `0.0.0-beta-17595`. The TUI plugin API is still moving, so a much newer or older build may drop the indicator without an error. If the figure never appears, check your version first, then [open an issue](https://github.com/P-Theo/opencode2-tps/issues).
 
 Install it with the CLI's plugin command, which adds the entry to `~/.config/opencode/cli.json` for you:
 
