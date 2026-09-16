@@ -14,9 +14,10 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # 26.4.0 is @opentui/core's documented Node floor; the non-bun toolchain runs on it.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 24
+          node-version: 26.4.0
           cache: npm
 
       # tsc, oxlint and scripts/build.mjs run on node; the test script is `bun test`.
@@ -44,7 +45,9 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/tps-pack" "$RUNNER_TEMP/tps-install"
           npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP/tps-pack"
+          tar -tzf "$RUNNER_TEMP"/tps-pack/opencode2-tps-*.tgz | grep -qx 'package/options.schema.json' || { echo "options.schema.json missing from the tarball"; exit 1; }
           opentui=$(node -p 'require("./node_modules/@opentui/solid/package.json").version')
           solid=$(node -p 'require("./node_modules/solid-js/package.json").version')
           npm install --ignore-scripts --prefix "$RUNNER_TEMP/tps-install" "$RUNNER_TEMP"/tps-pack/opencode2-tps-*.tgz "@opentui/solid@${opentui}" "solid-js@${solid}"
           node --input-type=module -e 'const m = await import(process.argv[1]); if (m.default?.id !== "opencode2.tps") { console.error("unexpected entrypoint export:", m.default); process.exit(1) }' "file://$RUNNER_TEMP/tps-install/node_modules/opencode2-tps/dist/tui.js"
+          (cd "$RUNNER_TEMP/tps-install" && node --input-type=module -e 'const s = await import("opencode2-tps/options.schema.json", { with: { type: "json" } }); if (s.default.title !== "opencode2-tps plugin options") { console.error("unexpected schema export:", s.default.title); process.exit(1) }')

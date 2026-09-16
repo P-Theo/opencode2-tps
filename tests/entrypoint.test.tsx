@@ -106,7 +106,11 @@ function createHarness(options: TpsOptionsInput = {}): Harness {
   const realClearInterval = globalThis.clearInterval
   // Rendering is throttled by the plugin's own interval; capture the callback
   // so the test can flush on demand instead of waiting on wall-clock time.
-  globalThis.setInterval = (callback: () => void, _ms?: number) => {
+  // SAFETY: Node 26's setInterval type has a conditional rest-args overload no
+  // two-parameter double can satisfy; the double ignores extra arguments by
+  // design, so the assignment is narrowed in one step — a test-double
+  // limitation, not a production cast.
+  globalThis.setInterval = ((callback: () => void, _ms?: number) => {
     flush = callback
     // A real (immediately cancelled) handle keeps the host's return type honest
     // without leaving a live interval behind.
@@ -114,7 +118,7 @@ function createHarness(options: TpsOptionsInput = {}): Harness {
     realClearInterval(handle)
 
     return handle
-  }
+  }) as typeof globalThis.setInterval
 
   globalThis.clearInterval = () => {
     flush = undefined

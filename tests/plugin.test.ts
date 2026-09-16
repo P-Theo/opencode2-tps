@@ -78,7 +78,11 @@ function createHarness(options: TpsOptionsInput = {}) {
 
   const realSetInterval = globalThis.setInterval
   const realClearInterval = globalThis.clearInterval
-  globalThis.setInterval = (fn: () => void, ms?: number) => {
+  // SAFETY: Node 26's setInterval type has a conditional rest-args overload no
+  // two-parameter double can satisfy; the double ignores extra arguments by
+  // design, so the assignment is narrowed in one step — a test-double
+  // limitation, not a production cast.
+  globalThis.setInterval = ((fn: () => void, ms?: number) => {
     timer.callback = fn
     timer.intervalMs = ms ?? 0
     timer.created += 1
@@ -88,7 +92,7 @@ function createHarness(options: TpsOptionsInput = {}) {
     realClearInterval(handle)
 
     return handle
-  }
+  }) as typeof globalThis.setInterval
 
   globalThis.clearInterval = () => {
     timer.cleared += 1
