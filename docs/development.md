@@ -7,14 +7,16 @@ npm ci          # install dependencies
 npm run lint    # oxlint
 npm run check   # tsc --noEmit
 npm test        # bun test
-npm run build   # write dist/tui.js
+npm run build   # write dist/tui.js and its sibling modules
 ```
 
-Tests run through `bun test`. `bunfig.toml` preloads `@opentui/solid/preload` so tests use Solid's client build and can observe reactive updates. `tps.test.ts` covers the tracker and the event wiring, and `entrypoint.test.tsx` runs `build.mjs`, imports `dist/tui.js`, and renders the composer claim with `testRender` asserting the label appears while streaming, settles and freezes, resets for a new prompt, and stays per-session.
+Tests run through `bun test`. `bunfig.toml` preloads `@opentui/solid/preload` so tests use Solid's client build and can observe reactive updates. `tests/tracker.test.ts` covers the throughput tracker, `tests/options.test.ts` the option parsing and label formatting, `tests/debug.test.ts` the debug switch, `tests/plugin.test.ts` the event wiring through a fake context and a patched `setInterval`, `tests/options-schema.test.ts` pins `options.schema.json` and the docs to the same constants the parser uses, and `tests/entrypoint.test.tsx` runs `scripts/build.mjs`, imports `dist/tui.js`, and renders the composer claim with `testRender` asserting the label appears while streaming, settles and freezes, resets for a new prompt, and stays per-session.
+
+`scripts/*.mjs` run under plain node and stay outside the `tsconfig.json` typecheck — they are exercised by CI and the entrypoint test instead.
 
 ## Run from source
 
-Point a path entry in `cli.json` at this repository's directory. The loader resolves `<directory>/tui.tsx`, which re-exports the plugin definition from `tps.tsx`, transforms the source, and watches it — saving `tps.tsx` reloads the plugin without a restart.
+Point a path entry in `cli.json` at this repository's directory. The loader resolves `<directory>/tui.tsx`, which re-exports the plugin definition from `src/plugin.tsx`, transforms the source, and watches it — saving a file under `src/` reloads the plugin without a restart.
 
 ```json
 {
@@ -27,7 +29,7 @@ Point a path entry in `cli.json` at this repository's directory. The loader reso
 }
 ```
 
-The entry must be a directory containing a `tui.tsx` entry file. Current betas skip entries that point at a file, so pointing at `tps.tsx` or `dist/tui.js` directly loads nothing.
+The entry must be a directory containing a `tui.tsx` entry file. Current betas skip entries that point at a file, so pointing at `src/plugin.tsx` or `dist/tui.js` directly loads nothing.
 
 `package` takes an absolute path, a `file://` URL, or a relative path that starts with `./` or `../` and resolves against the directory holding `cli.json`. Anything else is read as a package name.
 
@@ -35,7 +37,7 @@ The host also picks up plugins from a `plugin` or `plugins` directory in the con
 
 ## Build
 
-The host only applies the Solid transform outside `node_modules`, and an installed package lives inside it, so `build.mjs` runs the transform ahead of time and writes `dist/tui.js`. See `build.mjs` and the `exports` and `files` fields in `package.json`. The tarball ships only `dist`, so `tui.tsx` never reaches the package — it exists only for path entries.
+The host only applies the Solid transform outside `node_modules`, and an installed package lives inside it, so `scripts/build.mjs` runs the transform ahead of time and writes `dist/tui.js` plus its sibling modules (`dist/tracker.js`, `dist/options.js`, `dist/debug.js`), which the entrypoint imports relatively. See `scripts/build.mjs` and the `exports` and `files` fields in `package.json`. The tarball ships only `dist` and `options.schema.json`, so `tui.tsx` never reaches the package — it exists only for path entries.
 
 `solid-js` and `@opentui/solid` are optional peer dependencies; the host supplies its own copies.
 
@@ -59,10 +61,10 @@ That means one directory and one log per PID. Hot reloads append to the same fil
 - Settled TPS sums exact step tokens and divides once by the sum of observed step spans. Each span runs from `session.step.started` to `session.step.streamed`, the host's authoritative end of the model stream, published after the provider stream exits and before local tools join. Hosts that do not publish `session.step.streamed` fall back to the final `session.text.ended`, `session.reasoning.ended`, or `session.tool.input.ended` boundary. Delayed step settlement, local tool execution, and time between model steps are excluded.
 - TPS remains approximate because the host does not expose token-level provider timestamps. Encrypted content, signatures, and other opaque provider state are never byte-counted.
 - A single timer draws the label, and it stops after the live stale tail or when a step settles.
-- A finished run keeps its state until the next run replaces it, and the number of tracked sessions is bounded. See `MAX_TRACKED_RUNS` in `tps.tsx`.
+- A finished run keeps its state until the next run replaces it, and the number of tracked sessions is bounded. See `MAX_TRACKED_RUNS` in `src/tracker.ts`.
 - A generation guard makes sure only the newest generation of the plugin counts tokens and renders.
 
-For the event names and the formulas, read `tps.tsx`.
+For the event names and the formulas, read `src/`.
 
 ## Example run
 

@@ -11,7 +11,8 @@
     "allowImportingTsExtensions": true,
     "skipLibCheck": true,
     "noUncheckedIndexedAccess": true,
+    "resolveJsonModule": true,
     "types": ["node", "bun"]
   },
-  "include": ["tps.tsx", "tui.tsx", "tps.test.ts", "entrypoint.test.tsx"]
+  "include": ["tui.tsx", "src/**/*.ts", "src/**/*.tsx", "tests/**/*.ts", "tests/**/*.tsx"]
 }

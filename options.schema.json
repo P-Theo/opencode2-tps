@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/P-Theo/opencode2-tps/main/options.schema.json",
+  "title": "opencode2-tps plugin options",
+  "description": "Options for the opencode2-tps OpenCode 2 TUI plugin, as they appear in the plugin entry's `options` object in `~/.config/opencode/cli.json` (or `$XDG_CONFIG_HOME/opencode/cli.json`). The runtime parser is tolerant — an unusable value falls back to the documented default and an out-of-range number is clamped — but agents should write canonical values and validate against this schema. Unknown keys are rejected here on purpose: the runtime ignores them silently, so a typo in an option is otherwise invisible.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "display": {
+      "enum": ["both", "tokens", "tps"],
+      "default": "both",
+      "description": "Which parts of the label to show."
+    },
+    "refreshHz": {
+      "type": "number",
+      "minimum": 1,
+      "maximum": 60,
+      "default": 8,
+      "description": "How often the label updates while a session streams, clamped to 1-60."
+    },
+    "bytesPerToken": {
+      "type": "number",
+      "minimum": 1,
+      "maximum": 16,
+      "default": 4.75,
+      "description": "Bytes per token used for live and partial-output estimates, clamped to 1-16. Completed steps use OpenCode's reported token usage instead."
+    },
+    "debug": {
+      "type": "boolean",
+      "default": false,
+      "description": "Writes a debug log. Only `true` enables it."
+    }
+  },
+  "examples": [
+    {
+      "display": "tps",
+      "refreshHz": 12
+    },
+    {
+      "display": "both",
+      "refreshHz": 8,
+      "bytesPerToken": 4.75,
+      "debug": false
+    }
+  ]
+}

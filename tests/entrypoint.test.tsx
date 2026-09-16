@@ -1,5 +1,5 @@
 // The published package loads the precompiled dist/tui.js through its `./tui`
-// export, not tps.tsx. Every other test imports the source, so this suite builds
+// export, not src/plugin.tsx. Every other test imports the source, so this suite builds
 // the bundle with the production script, imports it, and renders the composer
 // claim with testRender: the transformed JSX mounts, the precompiled memo still
 // tracks the plugin's refresh signal, and the shipped label appears, settles and
@@ -11,11 +11,11 @@ import { fileURLToPath } from "node:url"
 import { testRender } from "@opentui/solid"
 import type { JSX } from "@opentui/solid"
 import type { Plugin } from "@opencode/plugin/tui"
-import type { TpsOptionsInput } from "./tps.tsx"
+import type { TpsOptionsInput } from "../src/options.ts"
 
-const root = fileURLToPath(new URL(".", import.meta.url))
+const root = fileURLToPath(new URL("..", import.meta.url))
 
-const distEntry = new URL("./dist/tui.js", import.meta.url).href
+const distEntry = new URL("../dist/tui.js", import.meta.url).href
 
 // 95 bytes / 4.75 bytes-per-token = 20 estimated tokens.
 const DELTA = "a".repeat(95)
@@ -26,9 +26,9 @@ beforeAll(async () => {
   // Spawn the production build with Node — the interpreter `npm run build` uses
   // — so every run tests a fresh dist/tui.js built exactly as the package
   // ships, even from a clean checkout and across watch-mode reruns.
-  const build = spawnSync("node", ["build.mjs"], { cwd: root, encoding: "utf8" })
+  const build = spawnSync("node", ["scripts/build.mjs"], { cwd: root, encoding: "utf8" })
 
-  if (build.status !== 0) throw new Error(`node build.mjs failed:\n${build.stderr || build.stdout}`)
+  if (build.status !== 0) throw new Error(`node scripts/build.mjs failed:\n${build.stderr || build.stdout}`)
   plugin = (await import(distEntry)).default
 })
 

@@ -4,6 +4,8 @@ Maintainer runbook.
 
 A path entry loads the `tui.tsx` source through the host's transform; an installed package loads the pre-built `dist/tui.js` through the `exports` subpath. Those are two different code paths, so the bundle gets tested before it goes out.
 
+The pinned `@opencode/*` beta is the build and test baseline. Move it in the same pull request as the fix or feature that needs it; CI validates the pin format, the README compatibility floor, and that the installed CLI reports the pinned version.
+
 A docs-only release skips steps 1 to 5. The bundle is unchanged, and CI already packs and imports the artifact on every push to `main`. Go straight to step 6. npmjs.com only refreshes the rendered README when a new version is published, so a README change that matters on the package page needs a patch release to reach it.
 
 ## 1. Build the tarball
@@ -14,7 +16,7 @@ A docs-only release skips steps 1 to 5. The bundle is unchanged, and CI already 
 npm pack --pack-destination /tmp
 ```
 
-The tarball holds `dist/tui.js`, `package.json`, `README.md` and `LICENSE`. The host entry point is `exports["./tui"]`.
+The tarball holds `dist/`, `options.schema.json`, `package.json`, `README.md` and `LICENSE`. The host entry point is `exports["./tui"]`.
 
 ## 2. Install the tarball into the host's cache
 

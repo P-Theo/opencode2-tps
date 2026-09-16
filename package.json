@@ -21,10 +21,12 @@
     "throughput"
   ],
   "exports": {
-    "./tui": "./dist/tui.js"
+    "./tui": "./dist/tui.js",
+    "./options.schema.json": "./options.schema.json"
   },
   "files": [
-    "dist"
+    "dist",
+    "options.schema.json"
   ],
   "peerDependencies": {
     "@opentui/solid": ">=0.5.4",
@@ -60,9 +62,9 @@
     "typescript": "^5.9.0"
   },
   "scripts": {
-    "build": "node build.mjs",
+    "build": "node scripts/build.mjs",
     "check": "tsc --noEmit",
-    "check:compatibility": "node check-compatibility.mjs",
+    "check:compatibility": "node scripts/check-compatibility.mjs",
     "lint": "oxlint",
     "test": "bun test",
     "prepack": "npm run lint && npm run check && npm test && npm run build"

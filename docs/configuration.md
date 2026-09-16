@@ -15,6 +15,10 @@ One extra rule:
 
 - `debug` only accepts `true`. Anything else leaves logging off.
 
+## Options schema
+
+[`options.schema.json`](../options.schema.json) publishes the same enumerations, defaults, bounds and descriptions this page documents. It ships in the package and is exported at `opencode2-tps/options.schema.json`, so editors and agents can validate options without the repository. Unknown keys are rejected by the schema on purpose, because the runtime ignores them silently.
+
 ## Example
 
 ```json

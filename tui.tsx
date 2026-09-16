@@ -1,3 +1,2 @@
-// Local path entries resolve `<directory>/tui.<extension>`; this re-exports the
-// plugin definition so a path entry at the repository root loads the source.
-export { default } from "./tps.tsx"
+// Local path entries resolve `<directory>/tui.<extension>`; this shim keeps that loader contract at the repository root while the implementation lives in `src/`.
+export { default } from "./src/plugin.tsx"
