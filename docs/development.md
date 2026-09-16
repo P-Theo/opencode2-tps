@@ -14,6 +14,8 @@ Tests run through `bun test`. `bunfig.toml` preloads `@opentui/solid/preload` so
 
 `scripts/*.mjs` run under plain node and stay outside the `tsconfig.json` typecheck — they are exercised by CI and the entrypoint test instead.
 
+CI runs the Node-side toolchain on Node 26.4, the `@opentui/core` documented floor; tests run under Bun either way.
+
 ## Run from source
 
 Point a path entry in `cli.json` at this repository's directory. The loader resolves `<directory>/tui.tsx`, which re-exports the plugin definition from `src/plugin.tsx`, transforms the source, and watches it — saving a file under `src/` reloads the plugin without a restart.

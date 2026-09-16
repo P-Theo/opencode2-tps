@@ -37,7 +37,11 @@ if (Number(floor.replace("0.0.0-beta-", "")) > Number(version.replace("0.0.0-bet
 // Resolved against this script's location, not cwd, so the check works from any directory.
 const root = fileURLToPath(new URL("..", import.meta.url))
 
-const executable = resolve(root, "node_modules", ".bin", process.platform === "win32" ? "opencode2.cmd" : "opencode2")
+// The package's own bin target, not npm's `.bin` wrapper: a .cmd shim cannot be
+// execFileSync'd on Windows without a shell, while the native binary runs
+// unshelled on every platform despite the .exe name. A normal install's
+// postinstall (or CI's prepare step with --ignore-scripts) puts it there.
+const executable = resolve(root, "node_modules", "@opencode", "cli", "bin", "opencode2.exe")
 
 const reported = execFileSync(executable, ["--version"], { encoding: "utf8" }).trim()
 
