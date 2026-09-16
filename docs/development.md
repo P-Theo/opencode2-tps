@@ -10,7 +10,14 @@ npm test        # bun test
 npm run build   # write dist/tui.js and its sibling modules
 ```
 
-Tests run through `bun test`. `bunfig.toml` preloads `@opentui/solid/preload` so tests use Solid's client build and can observe reactive updates. `tests/tracker.test.ts` covers the throughput tracker, `tests/options.test.ts` the option parsing and label formatting, `tests/debug.test.ts` the debug switch, `tests/plugin.test.ts` the event wiring through a fake context and a patched `setInterval`, `tests/options-schema.test.ts` pins `options.schema.json` and the docs to the same constants the parser uses, and `tests/entrypoint.test.tsx` runs `scripts/build.mjs`, imports `dist/tui.js`, and renders the composer claim with `testRender` asserting the label appears while streaming, settles and freezes, resets for a new prompt, and stays per-session.
+Tests run through `bun test`. `bunfig.toml` preloads `@opentui/solid/preload` so tests use Solid's client build and can observe reactive updates.
+
+- `tests/tracker.test.ts` covers the throughput tracker.
+- `tests/options.test.ts` covers the option parsing and label formatting.
+- `tests/debug.test.ts` covers the debug switch.
+- `tests/plugin.test.ts` covers the event wiring through a fake context and a patched `setInterval`.
+- `tests/options-schema.test.ts` pins `options.schema.json` and the docs to the same constants the parser uses.
+- `tests/entrypoint.test.tsx` runs `scripts/build.mjs`, imports `dist/tui.js`, and renders the composer claim with `testRender`, asserting the label appears while streaming, settles and freezes, resets for a new prompt, and stays per-session.
 
 `scripts/*.mjs` run under plain node and stay outside the `tsconfig.json` typecheck — they are exercised by CI and the entrypoint test instead.
 
@@ -39,7 +46,7 @@ The host also picks up plugins from a `plugin` or `plugins` directory in the con
 
 ## Build
 
-The host only applies the Solid transform outside `node_modules`, and an installed package lives inside it, so `scripts/build.mjs` runs the transform ahead of time and writes `dist/tui.js` plus its sibling modules (`dist/tracker.js`, `dist/options.js`, `dist/debug.js`), which the entrypoint imports relatively. See `scripts/build.mjs` and the `exports` and `files` fields in `package.json`. The tarball ships only `dist` and `options.schema.json`, so `tui.tsx` never reaches the package — it exists only for path entries.
+`scripts/build.mjs` runs the transform ahead of time and writes `dist/tui.js` plus its sibling modules (`dist/tracker.js`, `dist/options.js`, `dist/debug.js`), which the entrypoint imports relatively, because the host only applies the Solid transform outside `node_modules` and an installed package lives inside it. See `scripts/build.mjs` and the `exports` and `files` fields in `package.json`. The tarball ships only `dist` and `options.schema.json`, so `tui.tsx` never reaches the package — it exists only for path entries.
 
 `solid-js` and `@opentui/solid` are optional peer dependencies; the host supplies its own copies.
 
@@ -66,7 +73,7 @@ That means one directory and one log per PID. Hot reloads append to the same fil
 - A finished run keeps its state until the next run replaces it, and the number of tracked sessions is bounded. See `MAX_TRACKED_RUNS` in `src/tracker.ts`.
 - A generation guard makes sure only the newest generation of the plugin counts tokens and renders.
 
-For the event names and the formulas, read `src/`.
+Read `src/` for the event names and the formulas.
 
 ## Example run
 

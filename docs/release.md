@@ -6,7 +6,7 @@ A path entry loads the `tui.tsx` source through the host's transform; an install
 
 The pinned `@opencode/*` beta is the build and test baseline. Move it in the same pull request as the fix or feature that needs it; CI validates the pin format, the README compatibility floor, and that the installed CLI reports the pinned version.
 
-A docs-only release skips steps 1 to 5. The bundle is unchanged, and CI already packs and imports the artifact on every push to `main`. Go straight to step 6. npmjs.com only refreshes the rendered README when a new version is published, so a README change that matters on the package page needs a patch release to reach it.
+A docs-only release skips steps 1 to 5. The bundle is unchanged, and CI already packs and imports the artifact on every push to `main`. Go straight to step 6. A README change that matters on the package page needs a patch release to reach it, because npmjs.com only refreshes the rendered README when a new version is published.
 
 ## 1. Build the tarball
 

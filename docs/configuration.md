@@ -2,7 +2,7 @@
 
 Options go in the `options` field of the plugin's `cli.json` entry.
 
-The plugin always loads. An unknown key, or a value of the wrong type, falls back to the default; a number outside its range is clamped to the nearest limit.
+The plugin always loads. An unknown key is ignored; a value of the wrong type falls back to the default; a number outside its range is clamped to the nearest limit.
 
 | Option          | Default  | Range                       | Description                                                                                                              |
 | --------------- | -------- | --------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
