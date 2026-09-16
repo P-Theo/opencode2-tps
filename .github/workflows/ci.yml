@@ -44,7 +44,9 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/tps-pack" "$RUNNER_TEMP/tps-install"
           npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP/tps-pack"
+          tar -tzf "$RUNNER_TEMP"/tps-pack/opencode2-tps-*.tgz | grep -qx 'package/options.schema.json' || { echo "options.schema.json missing from the tarball"; exit 1; }
           opentui=$(node -p 'require("./node_modules/@opentui/solid/package.json").version')
           solid=$(node -p 'require("./node_modules/solid-js/package.json").version')
           npm install --ignore-scripts --prefix "$RUNNER_TEMP/tps-install" "$RUNNER_TEMP"/tps-pack/opencode2-tps-*.tgz "@opentui/solid@${opentui}" "solid-js@${solid}"
           node --input-type=module -e 'const m = await import(process.argv[1]); if (m.default?.id !== "opencode2.tps") { console.error("unexpected entrypoint export:", m.default); process.exit(1) }' "file://$RUNNER_TEMP/tps-install/node_modules/opencode2-tps/dist/tui.js"
+          (cd "$RUNNER_TEMP/tps-install" && node --input-type=module -e 'const s = await import("opencode2-tps/options.schema.json", { with: { type: "json" } }); if (s.default.title !== "opencode2-tps plugin options") { console.error("unexpected schema export:", s.default.title); process.exit(1) }')
