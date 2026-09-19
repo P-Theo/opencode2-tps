@@ -48,9 +48,9 @@
   "devDependencies": {
     "@babel/core": "^7.29.7",
     "@babel/preset-typescript": "^7.29.7",
-    "@opencode/cli": "0.0.0-beta-19381",
-    "@opencode/plugin": "0.0.0-beta-19381",
-    "@opencode/theme": "0.0.0-beta-19381",
+    "@opencode/cli": "2.0.10",
+    "@opencode/plugin": "2.0.10",
+    "@opencode/theme": "2.0.10",
     "@opentui/core": "^0.5.10",
     "@opentui/solid": "^0.5.10",
     "@oxlint/plugins": "^1.78.0",

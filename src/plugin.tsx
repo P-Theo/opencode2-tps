@@ -221,7 +221,7 @@ const definition: Plugin.Definition = {
           <Show when={label()}>
             {(text: () => string) => (
               <box width="100%" flexDirection="row" justifyContent="flex-end">
-                <text fg={ctx.theme.text.subdued}>{`${text()} `}</text>
+                <text fg={ctx.theme.text.muted}>{`${text()} `}</text>
               </box>
             )}
           </Show>
