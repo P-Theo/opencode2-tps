@@ -12,7 +12,9 @@ When OpenCode reports terminal usage, the token count becomes exact while TPS re
 
 ## Install
 
-Built against the OpenCode 2 preview. The earliest known compatible beta is `0.0.0-beta-17595`. The TUI plugin API is still moving, so a much newer or older build may drop the indicator without an error. If the figure never appears, check your version first, then [open an issue](https://github.com/P-Theo/opencode2-tps/issues).
+Built against the OpenCode 2 preview. The earliest known compatible beta is `0.0.0-beta-17595`. If the figure never appears, check your version first, then [open an issue](https://github.com/P-Theo/opencode2-tps/issues).
+
+The current plugin release targets the theme API in OpenCode `2.0.10`, using `ctx.theme.text.muted` in place of the old `ctx.theme.text.subdued` field. On older versions that only provide `subdued`, the indicator falls back to pure white (`#ffffff`) instead of the muted theme color.
 
 Install it with the CLI's plugin command, which adds the entry to `~/.config/opencode/cli.json` for you:
 

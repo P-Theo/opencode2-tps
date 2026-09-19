@@ -6,8 +6,7 @@ import { DEBUG_DIR_PREFIX } from "../src/debug.ts"
 import type { TpsOptionsInput } from "../src/options.ts"
 import definition from "../src/plugin.tsx"
 
-// ---------------------------------------------------------------------------
-// setup wiring: the reactive path cannot be rendered headlessly, but the parts
+// Setup wiring: the reactive path cannot be rendered headlessly, but the parts
 // that matter (which events are subscribed, and when the render timer runs) are
 // observable through a fake context and a patched setInterval.
 
@@ -48,7 +47,7 @@ interface Generation {
 interface FakeContext {
   readonly options: TpsOptionsInput
   readonly app: { readonly version: string }
-  readonly theme: { readonly text: { readonly subdued: string } }
+  readonly theme: { readonly text: { readonly muted: string } }
   readonly storage: {
     memory: (
       key: string,
@@ -102,7 +101,7 @@ function createHarness(options: TpsOptionsInput = {}) {
   const ctx: FakeContext = {
     options,
     app: { version: "test" },
-    theme: { text: { subdued: "#888888" } },
+    theme: { text: { muted: "#888888" } },
     storage: {
       memory: () => [generation, (mutation: (draft: Generation) => void) => mutation(generation)] as const,
     },

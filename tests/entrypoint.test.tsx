@@ -59,7 +59,7 @@ interface Claim {
 interface FakeContext {
   readonly options: TpsOptionsInput
   readonly app: { readonly version: string }
-  readonly theme: { readonly text: { readonly subdued: string } }
+  readonly theme: { readonly text: { readonly muted: string } }
   readonly storage: {
     readonly memory: (
       key: string,
@@ -127,7 +127,7 @@ function createHarness(options: TpsOptionsInput = {}): Harness {
   const context: FakeContext = {
     options,
     app: { version: "test" },
-    theme: { text: { subdued: "#888888" } },
+    theme: { text: { muted: "#888888" } },
     storage: {
       memory: () => [generation, (mutation: (draft: Generation) => void) => mutation(generation)] as const,
     },

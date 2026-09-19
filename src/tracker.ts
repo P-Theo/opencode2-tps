@@ -1,9 +1,6 @@
-// ---------------------------------------------------------------------------
-// tracker (UI-free)
-//
-// Measures the rate of the observable model stream: bytes to a rolling
-// estimate while output arrives, exact step usage once the host reports it,
-// and a frozen average after the run ends.
+// Measures the rate of the observable model stream (UI-free by design): bytes
+// to a rolling estimate while output arrives, exact step usage once the host
+// reports it, and a frozen average after the run ends.
 
 import { mark } from "./debug.js"
 
@@ -14,7 +11,6 @@ export interface TpsConfig {
 export const DEFAULT_CONFIG: TpsConfig = {
   bytesPerToken: 4.75,
 }
-// The frozen final average stays visible until the next prompt starts a new run.
 
 export const BYTES_PER_TOKEN_MIN = 1
 

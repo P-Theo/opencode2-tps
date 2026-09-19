@@ -1,6 +1,3 @@
-// Verifies the OpenCode 2 compatibility pin in package.json and the floor
-// stated in the README. The pinned beta is the build and test baseline: move
-// it in the same pull request as the fix or feature that needs it.
 import { execFileSync } from "node:child_process"
 import { readFileSync } from "node:fs"
 import { resolve } from "node:path"
@@ -16,7 +13,7 @@ const versions = packages.map((name) => packageJson.devDependencies[name])
 
 const version = versions[0]
 
-if (!/^0\.0\.0-beta-\d{5,6}$/.test(version)) {
+if (!/^2\.\d+\.\d+$/.test(version)) {
   throw new Error(`OpenCode 2 compatibility version has an unexpected format: ${version}`)
 }
 
@@ -24,13 +21,13 @@ if (!versions.every((candidate) => candidate === version)) {
   throw new Error(`OpenCode 2 packages must use one exact version: ${versions.join(", ")}`)
 }
 
-const floor = /earliest known compatible beta is\s+`(0\.0\.0-beta-\d{5,6})`/i.exec(readme)?.[1]
+const floor = /earliest known compatible (?:beta|version for this release) is\s+`(0\.0\.0-beta-\d{5,6}|2\.\d+\.\d+)`/i.exec(readme)?.[1]
 
 if (floor === undefined) {
-  throw new Error("README does not state the earliest known compatible beta")
+  throw new Error("README does not state the earliest known compatible version")
 }
 
-if (Number(floor.replace("0.0.0-beta-", "")) > Number(version.replace("0.0.0-beta-", ""))) {
+if (floor.localeCompare(version, "en", { numeric: true }) > 0) {
   throw new Error(`README floor ${floor} is newer than the pinned compatibility target ${version}`)
 }
 
@@ -41,12 +38,12 @@ const root = fileURLToPath(new URL("..", import.meta.url))
 // execFileSync'd on Windows without a shell, while the native binary runs
 // unshelled on every platform despite the .exe name. A normal install's
 // postinstall (or CI's prepare step with --ignore-scripts) puts it there.
-const executable = resolve(root, "node_modules", "@opencode", "cli", "bin", "opencode2.exe")
+const executable = resolve(root, "node_modules", "@opencode", "cli", "bin", "opencode.exe")
 
 const reported = execFileSync(executable, ["--version"], { encoding: "utf8" }).trim()
 
-if (reported !== `opencode2 v${version}`) {
-  throw new Error(`Expected opencode2 v${version}, got ${reported}`)
+if (reported !== `opencode v${version}`) {
+  throw new Error(`Expected opencode v${version}, got ${reported}`)
 }
 
 console.log(`OpenCode 2 compatibility target: ${version} (floor ${floor})`)

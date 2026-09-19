@@ -2,9 +2,6 @@ import { appendFileSync, lstatSync, mkdirSync, mkdtempSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-// ---------------------------------------------------------------------------
-// debug
-//
 // Off unless asked for: an unconfigured install must never touch disk.
 //
 // The log goes inside an owner-only directory instead of straight into the

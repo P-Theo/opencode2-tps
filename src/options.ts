@@ -1,6 +1,3 @@
-// ---------------------------------------------------------------------------
-// options
-//
 // `ctx.options` is host-supplied JSON (Record<string, any>), so this is a real
 // parsing boundary: every value is validated and clamped, and anything invalid
 // falls back to the default rather than propagating NaN into the arithmetic.

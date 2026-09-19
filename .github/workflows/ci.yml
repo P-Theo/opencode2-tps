@@ -30,7 +30,7 @@ jobs:
       # The compatibility check needs the CLI, but running its postinstall would
       # restore dependency lifecycle-script execution. The runner is Linux x64.
       - name: Prepare the OpenCode CLI
-        run: install -m 755 node_modules/@opencode/cli-linux-x64/bin/opencode2 node_modules/@opencode/cli/bin/opencode2.exe
+        run: install -m 755 node_modules/@opencode/cli-linux-x64/bin/opencode node_modules/@opencode/cli/bin/opencode.exe
 
       - run: npm run check:compatibility
 
