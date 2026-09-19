@@ -1,6 +1,3 @@
-// Verifies the OpenCode 2 compatibility pin in package.json and the floor
-// stated in the README. The pinned beta is the build and test baseline: move
-// it in the same pull request as the fix or feature that needs it.
 import { execFileSync } from "node:child_process"
 import { readFileSync } from "node:fs"
 import { resolve } from "node:path"

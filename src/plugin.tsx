@@ -5,9 +5,6 @@ import { configureDebug, isEnvEnabled, mark } from "./debug.js"
 import { TpsTracker } from "./tracker.js"
 import { formatLabel, resolveOptions } from "./options.js"
 
-// ---------------------------------------------------------------------------
-// plugin
-
 // Event payloads are taken from the SDK's own union (via the non-generic
 // `data.listen` signature) rather than restated structurally: handlers are
 // contravariant, so hand-written shapes keep typechecking after a field rename.

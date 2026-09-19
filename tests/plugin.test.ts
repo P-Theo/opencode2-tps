@@ -6,8 +6,7 @@ import { DEBUG_DIR_PREFIX } from "../src/debug.ts"
 import type { TpsOptionsInput } from "../src/options.ts"
 import definition from "../src/plugin.tsx"
 
-// ---------------------------------------------------------------------------
-// setup wiring: the reactive path cannot be rendered headlessly, but the parts
+// Setup wiring: the reactive path cannot be rendered headlessly, but the parts
 // that matter (which events are subscribed, and when the render timer runs) are
 // observable through a fake context and a patched setInterval.
 
