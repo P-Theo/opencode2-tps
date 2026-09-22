@@ -69,7 +69,7 @@ That means one directory and one log per PID. Hot reloads append to the same fil
 - A completed model step reports exact generated usage as `tokens.output + tokens.reasoning`. This replaces that step's byte estimate.
 - Settled TPS sums exact step tokens and divides once by the sum of observed step spans. Each span runs from `session.step.started` to `session.step.streamed`, the host's authoritative end of the model stream, published after the provider stream exits and before local tools join. Hosts that do not publish `session.step.streamed` fall back to the final `session.text.ended`, `session.reasoning.ended`, or `session.tool.input.ended` boundary. Delayed step settlement, local tool execution, and time between model steps are excluded.
 - TPS remains approximate because the host does not expose token-level provider timestamps. Encrypted content, signatures, and other opaque provider state are never byte-counted.
-- A single timer draws the label, and it stops when the stream boundary is known, when a step settles without one, or when the live stale tail expires. A held rate cannot change with time, so lifecycle events repaint it through the dirty flag instead of restarting the timer.
+- A single timer draws the label, and it stops when the stream boundary is known, when a step settles without one, or when the live stale tail expires. A held rate cannot change with time, so lifecycle events schedule one final dirty repaint without keeping the timer running.
 - A finished run keeps its state until the next run replaces it, and the number of tracked sessions is bounded. See `MAX_TRACKED_RUNS` in `src/tracker.ts`.
 - A generation guard makes sure only the newest generation of the plugin counts tokens and renders.
 
