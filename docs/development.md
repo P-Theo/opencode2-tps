@@ -65,11 +65,11 @@ That means one directory and one log per PID. Hot reloads append to the same fil
 
 - The plugin listens to session events to start a run, end a run, and collect the model's output.
 - It estimates live tokens from observable UTF-8 bytes at 4.75 bytes per token by default. Complete block values reconcile buffered or missed deltas.
-- Live TPS is a bounded rolling rate over observable deltas. Its denominator stops after a short stale tail because silence may be encrypted reasoning or buffered tool input rather than inactivity.
+- Live TPS is a bounded rolling rate over observable deltas. Its denominator stops after a short stale tail because silence may be encrypted reasoning or buffered tool input rather than inactivity. At the `session.step.streamed` boundary the clock stops entirely. The live estimate is then held across tool execution and between steps, and only new observable bytes resume it.
 - A completed model step reports exact generated usage as `tokens.output + tokens.reasoning`. This replaces that step's byte estimate.
 - Settled TPS sums exact step tokens and divides once by the sum of observed step spans. Each span runs from `session.step.started` to `session.step.streamed`, the host's authoritative end of the model stream, published after the provider stream exits and before local tools join. Hosts that do not publish `session.step.streamed` fall back to the final `session.text.ended`, `session.reasoning.ended`, or `session.tool.input.ended` boundary. Delayed step settlement, local tool execution, and time between model steps are excluded.
 - TPS remains approximate because the host does not expose token-level provider timestamps. Encrypted content, signatures, and other opaque provider state are never byte-counted.
-- A single timer draws the label, and it stops after the live stale tail or when a step settles.
+- A single timer draws the label, and it stops when the stream boundary is known, when a step settles without one, or when the live stale tail expires. A held rate cannot change with time, so lifecycle events repaint it through the dirty flag instead of restarting the timer.
 - A finished run keeps its state until the next run replaces it, and the number of tracked sessions is bounded. See `MAX_TRACKED_RUNS` in `src/tracker.ts`.
 - A generation guard makes sure only the newest generation of the plugin counts tokens and renders.
 
@@ -86,8 +86,8 @@ One user prompt becomes a stream of events; the tracker does the bookkeeping bel
 | An output block begins                             | `session.*.started` (m1)                          | create an idempotent text, reasoning, or tool-input block                                           |
 | Observable output streams                          | `session.*.delta` (m1)                            | add UTF-8 bytes and a rolling-rate sample                                                           |
 | The complete block becomes available               | `session.*.ended` (m1)                            | reconcile its full byte count and record the model-content boundary                                 |
-| The provider stream exits                          | `session.step.streamed` (m1)                      | record the authoritative span end, before local tools join                                          |
-| The model step settles, possibly after a tool runs | `session.step.ended` / `failed` (m1)              | replace the estimate with reported usage when available; add duration through the streamed boundary |
+| The provider stream exits                          | `session.step.streamed` (m1)                      | record the authoritative span end, before local tools join, and capture the live rate there          |
+| The model step settles, possibly after a tool runs | `session.step.ended` / `failed` (m1)              | replace the estimate with reported usage; add duration through the span end; capture the held rate there |
 | The whole execution finishes                       | `session.execution.succeeded` / `failed` / `idle` | freeze exact settled tokens plus any explicitly estimated partial output                            |
 
 Current betas no longer publish `session.tool.input.delta`; tool arguments arrive only as the complete `session.tool.input.ended` text. Older betas streamed both, and the plugin still subscribes to the delta event for them. Ended-value reconciliation supports either without double-counting.

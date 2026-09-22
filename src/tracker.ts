@@ -1,6 +1,10 @@
 // Measures the rate of the observable model stream (UI-free by design): bytes
 // to a rolling estimate while output arrives, exact step usage once the host
 // reports it, and a frozen average after the run ends.
+//
+// While a run is active, `value()` holds the last live estimate across tool
+// execution and between steps. New observable bytes resume it, and `finish()`
+// alone freezes the weighted run average.
 
 import { mark } from "./debug.js"
 
@@ -70,6 +74,7 @@ interface RunState {
   activeStep: StepState | null
   readonly settledSteps: Set<string>
   frozen: Frozen | null
+  heldLiveTps: number | null
 }
 
 export interface TpsValue {
@@ -111,6 +116,7 @@ export class TpsTracker {
         activeStep: null,
         settledSteps: new Set(),
         frozen: null,
+        heldLiveTps: null,
       }
       this.runs.set(sessionID, st)
     }
@@ -128,6 +134,7 @@ export class TpsTracker {
     st.activeStep = null
     st.settledSteps.clear()
     st.frozen = null
+    st.heldLiveTps = null
     // Re-insert so this session becomes the newest in iteration order. Every
     // entry is created through here, so the cap is checked on the one path that
     // can grow the map.
@@ -219,6 +226,12 @@ export class TpsTracker {
     const bytes = Buffer.byteLength(delta, "utf8")
     block.streamedBytes += bytes
     step.observableBytes += bytes
+
+    // New bytes after a stream-end boundary reopen the live clock. A resumed
+    // attempt reuses the same message ID, so the old boundary would otherwise
+    // freeze the new output too.
+    if (step.streamedAt !== null && now > step.streamedAt) step.streamedAt = null
+
     step.samples.push({ bytes, timestamp: now })
     const oldest = now - LIVE_WINDOW_MS
 
@@ -253,7 +266,8 @@ export class TpsTracker {
    * The host's authoritative end of the model stream, published after the
    * provider stream exits and before local tools join. Assigned rather than
    * maxed so a retried attempt reusing the message ID moves the boundary to its
-   * own completion.
+   * own completion. It also captures the live estimate here for the held rate,
+   * and a step with no observable samples leaves the previous hold alone.
    */
   markStreamed(sessionID: string, assistantMessageID: string, now: number): void {
     const st = this.runs.get(sessionID)
@@ -261,12 +275,28 @@ export class TpsTracker {
 
     if (!step || step.assistantMessageID !== assistantMessageID) return
     step.streamedAt = now
+    const live = this.liveTps(step, now)
+
+    if (live !== null && st) st.heldLiveTps = live
   }
 
   private settleActiveStep(st: RunState, generatedTokens: number | undefined): void {
     const step = st.activeStep
 
     if (!step) return
+
+    // Capture the hold before the samples are discarded. Use the boundary, not
+    // the delayed settlement time, and skip a boundary older than the newest
+    // sample: those bytes would divide by the 250 ms floor and inflate the rate.
+    const boundary = step.streamedAt ?? step.lastBoundaryAt
+    const lastSample = step.samples.at(-1)
+
+    if (boundary !== null && lastSample !== undefined && boundary >= lastSample.timestamp) {
+      const live = this.liveTps(step, boundary)
+
+      if (live !== null) st.heldLiveTps = live
+    }
+
     const exact = generatedTokens !== undefined && Number.isFinite(generatedTokens) && generatedTokens >= 0
     st.settledTokens += exact ? generatedTokens : estimateTokens(step.observableBytes, this.config.bytesPerToken)
 
@@ -322,9 +352,13 @@ export class TpsTracker {
 
   hasRunning(now = Date.now()): boolean {
     for (const st of this.runs.values()) {
-      const last = st.activeStep?.samples.at(-1)
+      if (st.phase !== "running") continue
+      const step = st.activeStep
 
-      if (st.phase === "running" && last && now < last.timestamp + LIVE_STALE_MS) return true
+      if (!step || step.streamedAt !== null) continue
+      const last = step.samples.at(-1)
+
+      if (last && now < last.timestamp + LIVE_STALE_MS) return true
     }
 
     return false
@@ -334,7 +368,12 @@ export class TpsTracker {
     const last = step.samples.at(-1)
 
     if (!last) return null
-    const effectiveNow = Math.min(now, last.timestamp + LIVE_STALE_MS)
+
+    // Once the stream end is known the clock stops there: no further
+    // time-driven decay while tools run. The stale-tail clamp still applies
+    // up to that boundary.
+    const streamCap = step.streamedAt ?? Number.POSITIVE_INFINITY
+    const effectiveNow = Math.min(now, last.timestamp + LIVE_STALE_MS, streamCap)
     const oldest = effectiveNow - LIVE_WINDOW_MS
     const samples = step.samples.filter((sample) => sample.timestamp >= oldest)
     const first = samples[0]
@@ -366,8 +405,11 @@ export class TpsTracker {
     if (tokens <= 0) return null
     const settledTps = st.settledDurationMs > 0 ? st.settledTokens / (st.settledDurationMs / 1000) : null
 
+    // A settled average never displaces the held live rate.
+    const tps = active ? (this.liveTps(active, now) ?? st.heldLiveTps ?? settledTps) : (st.heldLiveTps ?? settledTps)
+
     return {
-      tps: active ? (this.liveTps(active, now) ?? settledTps) : settledTps,
+      tps,
       tokens,
       frozen: false,
       tokensEstimated: st.tokensEstimated || active !== null,

@@ -79,7 +79,7 @@ OpenCode's reported output and reasoning usage replaces the byte estimate at the
 
 OpenCode's built-in assistant-footer t/s divides visible output tokens by the same step spans, leaving hidden reasoning out of its numerator. This plugin counts output plus reasoning, so on reasoning models its settled figure reads higher than the built-in one — those tokens were generated too.
 
-TPS is always approximate (`~`) because OpenCode does not expose token-level timestamps. Proprietary reasoning may be encrypted or represented only by a short summary, and some providers buffer tool arguments until completion. During those opaque intervals the live rate holds or becomes unavailable instead of continuously falling. Opaque provider state is never counted by byte length.
+TPS is always approximate (`~`) because OpenCode does not expose token-level timestamps. Proprietary reasoning may be encrypted or represented only by a short summary, and some providers buffer tool arguments until completion. During those opaque intervals, across local tool execution, and between model steps, the live rate holds instead of falling. It freezes at the stream-end boundary, or at the final content boundary when the host publishes no such event, and only new observable output resumes it. Opaque provider state is never counted by byte length.
 
 For more detail, see [Architecture](docs/development.md#architecture).
 
@@ -87,7 +87,7 @@ For more detail, see [Architecture](docs/development.md#architecture).
 
 Every output event carries the ID of the session that produced it, so each session is measured on its own.
 
-A sub-agent streams under its own child session ID. The orchestrator's number stops moving while it works and holds the average of the output the orchestrator produced before delegating. Open the sub-agent's session to watch its live throughput.
+A sub-agent streams under its own child session ID. The orchestrator's number stops moving while it works and holds the last live rate it measured before delegating. Open the sub-agent's session to watch its live throughput.
 
 <p align="center">
   <img src="docs/screenshots/subagent_tps.png" width="750" alt="Sub-agent session showing its own live throughput indicator" />

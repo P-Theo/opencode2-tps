@@ -440,4 +440,201 @@ describe("TpsTracker", () => {
     tracker.finish("s0", 100)
     expect(tracker.value("s0", 100)).toBeNull()
   })
+
+  test("holds the live rate across tool execution instead of switching to the run average", () => {
+    const tracker = new TpsTracker()
+
+    tracker.beginRun("s")
+    tracker.beginStep("s", "m1", 0)
+    tracker.push("s", "a".repeat(95), 3200, "m1", "text:0")
+    tracker.finishBlock("s", "m1", "text:0", "a".repeat(95), 3200)
+    tracker.markStreamed("s", "m1", 3200)
+    expect(tracker.value("s", 3200)?.tps).toBeCloseTo(80)
+
+    tracker.finishStep("s", "m1", 20, 10_000)
+    const running = tracker.value("s", 10_000)
+
+    expect(running?.tokens).toBe(20)
+    expect(running?.tps).toBeCloseTo(80)
+    expect(running?.frozen).toBe(false)
+
+    // A new step with no samples keeps the held rate.
+    tracker.beginStep("s", "m2", 20_000)
+    expect(tracker.value("s", 20_500)?.tps).toBeCloseTo(80)
+
+    // New observable output replaces the held value, including downward.
+    tracker.push("s", "a".repeat(50), 20_250, "m2", "text:0")
+    expect(tracker.value("s", 20_250)?.tps).toBeCloseTo(44)
+  })
+
+  test("keeps the frozen run average distinct from the held running display", () => {
+    const tracker = new TpsTracker()
+
+    tracker.beginRun("s")
+    tracker.beginStep("s", "m1", 0)
+    tracker.push("s", "a".repeat(95), 3200, "m1", "text:0")
+    tracker.finishBlock("s", "m1", "text:0", "a".repeat(95), 3200)
+    tracker.markStreamed("s", "m1", 3200)
+    tracker.finishStep("s", "m1", 20, 10_000)
+    tracker.finish("s", 11_000)
+    const frozen = tracker.value("s", 11_000)
+
+    expect(frozen?.frozen).toBe(true)
+    expect(frozen?.tokens).toBe(20)
+    expect(frozen?.tps).toBeCloseTo(6.25)
+  })
+
+  test("freezes the live rate at the stream-end boundary while tools run", () => {
+    const tracker = new TpsTracker()
+
+    tracker.beginStep("s", "m1", 0)
+    tracker.push("s", "a".repeat(95), 1000, "m1", "text:0")
+    tracker.markStreamed("s", "m1", 1250)
+    expect(tracker.value("s", 1250)?.tps).toBeCloseTo(80)
+    expect(tracker.value("s", 1500)?.tps).toBeCloseTo(80)
+    expect(tracker.value("s", 5000)?.tps).toBeCloseTo(80)
+    expect(tracker.value("s", 30_000)?.tps).toBeCloseTo(80)
+  })
+
+  test("keeps open-stream decay when no stream-end boundary exists", () => {
+    const tracker = new TpsTracker()
+
+    tracker.beginStep("s", "m1", 0)
+    tracker.push("s", "a".repeat(95), 1000, "m1", "text:0")
+    expect(tracker.value("s", 1250)?.tps).toBeCloseTo(80)
+    // Without markStreamed the existing stale-tail decay still applies.
+    expect(tracker.value("s", 1500)?.tps).toBeLessThan(80)
+    expect(tracker.value("s", 2500)?.tps).toBeCloseTo(20 / 1.5)
+    expect(tracker.value("s", 30_000)?.tps).toBeCloseTo(20 / 1.5)
+  })
+
+  test("held rate does not depend on read frequency", () => {
+    const withReads = new TpsTracker()
+    withReads.beginStep("s", "m1", 0)
+    withReads.push("s", "a".repeat(95), 1000, "m1", "text:0")
+    withReads.markStreamed("s", "m1", 1250)
+    withReads.value("s", 1500)
+    withReads.value("s", 2000)
+    withReads.finishStep("s", "m1", 20, 10_000)
+    withReads.beginStep("s", "m2", 20_000)
+
+    const withoutReads = new TpsTracker()
+    withoutReads.beginStep("s", "m1", 0)
+    withoutReads.push("s", "a".repeat(95), 1000, "m1", "text:0")
+    withoutReads.markStreamed("s", "m1", 1250)
+    withoutReads.finishStep("s", "m1", 20, 10_000)
+    withoutReads.beginStep("s", "m2", 20_000)
+
+    expect(withReads.value("s", 20_500)?.tps).toBeCloseTo(
+      withoutReads.value("s", 20_500)?.tps ?? -1,
+    )
+    expect(withoutReads.value("s", 20_500)?.tps).toBeCloseTo(80)
+  })
+
+  test("buffered-only tool input preserves the prior held rate", () => {
+    const tracker = new TpsTracker()
+
+    tracker.beginStep("s", "m1", 0)
+    tracker.push("s", "a".repeat(95), 1000, "m1", "text:0")
+    tracker.finishBlock("s", "m1", "text:0", "a".repeat(95), 1000)
+    tracker.markStreamed("s", "m1", 1250)
+    tracker.finishStep("s", "m1", 20, 5000)
+
+    tracker.beginStep("s", "m2", 6000)
+    tracker.beginBlock("s", "m2", "tool:t1", 6100)
+    tracker.finishBlock("s", "m2", "tool:t1", "a".repeat(95), 6500)
+    tracker.markStreamed("s", "m2", 6600)
+    expect(tracker.value("s", 6600)?.tps).toBeCloseTo(80)
+    tracker.finishStep("s", "m2", 20, 9000)
+    expect(tracker.value("s", 9000)?.tps).toBeCloseTo(80)
+  })
+
+  test("missing streamed event falls back to the content boundary without charging tool wait", () => {
+    const tracker = new TpsTracker()
+
+    tracker.beginStep("s", "m1", 0)
+    tracker.push("s", "a".repeat(95), 1000, "m1", "text:0")
+    tracker.finishBlock("s", "m1", "text:0", "a".repeat(95), 1200)
+    tracker.finishStep("s", "m1", 20, 10_000)
+    // At the content boundary the span is only 200 ms, below the 250 ms floor,
+    // so the rate is 20 tokens over 250 ms: 80 t/s.
+    expect(tracker.value("s", 10_000)?.tps).toBeCloseTo(80)
+    tracker.finish("s", 11_000)
+    // Accounting still uses the content boundary: 20 tokens / 1.2 s.
+    expect(tracker.value("s", 11_000)?.tps).toBeCloseTo(20 / 1.2)
+  })
+
+  test("a fallback boundary older than the newest sample preserves the prior hold", () => {
+    const tracker = new TpsTracker()
+
+    tracker.beginStep("s", "m1", 0)
+    tracker.push("s", "a".repeat(95), 1000, "m1", "text:0")
+    tracker.finishBlock("s", "m1", "text:0", "a".repeat(95), 1000)
+    tracker.markStreamed("s", "m1", 1250)
+    tracker.finishStep("s", "m1", 20, 5000)
+    expect(tracker.value("s", 5000)?.tps).toBeCloseTo(80)
+
+    // m2's guessed boundary, its last content block at 6500, predates the
+    // newest sample at 7000. Capturing there would divide 400 tokens by the
+    // 250 ms floor for a rate of 1600 t/s, so the stale fallback must leave
+    // the prior hold alone.
+    tracker.beginStep("s", "m2", 6000)
+    tracker.finishBlock("s", "m2", "text:0", "", 6500)
+    tracker.push("s", "b".repeat(1900), 7000, "m2", "text:1")
+    tracker.finishStep("s", "m2", undefined, 9000)
+    expect(tracker.value("s", 9000)?.tps).toBeCloseTo(80)
+  })
+
+  test("a retried message reopens live calculation with new samples", () => {
+    const tracker = new TpsTracker()
+
+    tracker.beginStep("s", "m1", 0)
+    tracker.push("s", "a".repeat(95), 1000, "m1", "text:0")
+    tracker.markStreamed("s", "m1", 1250)
+    expect(tracker.value("s", 5000)?.tps).toBeCloseTo(80)
+    expect(tracker.hasRunning(2000)).toBe(false)
+
+    tracker.push("s", "a".repeat(95), 6000, "m1", "text:0")
+    expect(tracker.hasRunning(6000)).toBe(true)
+    expect(tracker.value("s", 6000)).not.toBeNull()
+    tracker.markStreamed("s", "m1", 6250)
+    expect(tracker.value("s", 6250)?.tps).toBeCloseTo(80)
+  })
+
+  test("implicit settlement through a step replacement preserves the held rate", () => {
+    const tracker = new TpsTracker()
+
+    tracker.beginStep("s", "m1", 0)
+    tracker.push("s", "a".repeat(95), 1000, "m1", "text:0")
+    tracker.finishBlock("s", "m1", "text:0", "a".repeat(95), 1000)
+    tracker.markStreamed("s", "m1", 1250)
+    // Replacing the active step settles m1 without an explicit finishStep.
+    tracker.beginStep("s", "m2", 5000)
+    expect(tracker.value("s", 5000)?.tps).toBeCloseTo(80)
+  })
+
+  test("a new run clears the held rate and sessions stay isolated", () => {
+    const tracker = new TpsTracker()
+
+    tracker.beginStep("s", "m1", 0)
+    tracker.push("s", "a".repeat(95), 1000, "m1", "text:0")
+    tracker.markStreamed("s", "m1", 1250)
+    tracker.finishStep("s", "m1", 20, 5000)
+    expect(tracker.value("s", 5000)?.tps).toBeCloseTo(80)
+    expect(tracker.value("other", 5000)).toBeNull()
+
+    tracker.beginRun("s")
+    expect(tracker.value("s", 5001)).toBeNull()
+  })
+
+  test("stops the refresh timer once the stream boundary is known", () => {
+    const tracker = new TpsTracker()
+
+    tracker.beginStep("s", "m1", 0)
+    tracker.push("s", "a".repeat(95), 1000, "m1", "text:0")
+    expect(tracker.hasRunning(1100)).toBe(true)
+    tracker.markStreamed("s", "m1", 1250)
+    expect(tracker.hasRunning(1300)).toBe(false)
+    expect(tracker.hasRunning(5000)).toBe(false)
+  })
 })
