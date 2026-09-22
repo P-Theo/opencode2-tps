@@ -226,6 +226,40 @@ describe("plugin setup", () => {
     h.restore()
   })
 
+  test("stops the timer once the stream boundary is known", () => {
+    const h = createHarness()
+    const realNow = Date.now
+
+    Date.now = () => 1_000
+
+    try {
+      h.emit("session.step.started", { sessionID: "s", assistantMessageID: "m1" })
+      h.emit("session.text.delta", { sessionID: "s", assistantMessageID: "m1", ordinal: 0, delta: "a".repeat(95) })
+      expect(h.timer.created).toBe(1)
+      h.tick() // fresh sample inside the stale tail: still ticking
+      expect(h.timer.cleared).toBe(0)
+
+      h.emit("session.step.streamed", { sessionID: "s", assistantMessageID: "m1" })
+      h.tick() // the held rate cannot change with time, so the timer stops
+      expect(h.timer.cleared).toBe(1)
+
+      h.emit("session.step.ended", {
+        sessionID: "s",
+        assistantMessageID: "m1",
+        tokens: { output: 20, reasoning: 0 },
+      })
+      // The lifecycle event calls touch() again, which recreates the timer.
+      // With no live rate left to follow, the next flush stops it again.
+      h.tick()
+      expect(h.timer.created).toBeGreaterThan(1)
+      expect(h.timer.cleared).toBeGreaterThan(1)
+    } finally {
+      Date.now = realNow
+      h.cleanup()
+      h.restore()
+    }
+  })
+
   test("honours refreshHz", () => {
     const h = createHarness({ refreshHz: 20 })
     h.emit("session.text.delta", { sessionID: "s", delta: "hello" })
